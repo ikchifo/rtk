@@ -11,10 +11,11 @@ use crate::hooks::constants::{
 };
 
 use super::constants::{
-    BEFORE_TOOL_KEY, CLAUDE_DIR, CLAUDE_HOOK_COMMAND, CODEX_DIR, CURSOR_HOOK_COMMAND,
-    GEMINI_HOOK_FILE, HOOKS_JSON, HOOKS_SUBDIR, PRE_TOOL_USE_KEY, REWRITE_HOOK_FILE, SETTINGS_JSON,
+    BEFORE_TOOL_KEY, CLAUDE_DIR, CLAUDE_HOOK_COMMAND, CODEX_DIR, GEMINI_HOOK_FILE, HOOKS_JSON,
+    HOOKS_SUBDIR, PRE_TOOL_USE_KEY, REWRITE_HOOK_FILE, SETTINGS_JSON,
 };
 use super::integrity;
+use super::resolve::{is_rtk_hook_command, resolve_absolute_hook_command};
 
 // Embedded OpenCode plugin (auto-rewrite)
 const OPENCODE_PLUGIN: &str = include_str!("../../hooks/opencode/rtk.ts");
@@ -526,8 +527,7 @@ fn remove_hook_from_json(root: &mut serde_json::Value) -> bool {
         if let Some(hooks_array) = entry.get("hooks").and_then(|h| h.as_array()) {
             for hook in hooks_array {
                 if let Some(command) = hook.get("command").and_then(|c| c.as_str()) {
-                    // Match both legacy script path and new binary command
-                    if command.contains(REWRITE_HOOK_FILE) || command == CLAUDE_HOOK_COMMAND {
+                    if is_rtk_hook_command(command) {
                         return false;
                     }
                 }
@@ -1069,8 +1069,7 @@ fn insert_hook_entry(root: &mut serde_json::Value, hook_command: &str) -> Result
     Ok(())
 }
 
-/// Check if RTK hook is already present in settings.json
-/// Matches on legacy rtk-rewrite.sh path OR new `rtk hook claude` command
+/// Check if RTK hook is already present in settings.json.
 fn hook_already_present(root: &serde_json::Value, hook_command: &str) -> bool {
     let pre_tool_use_array = match root
         .get("hooks")
@@ -1086,9 +1085,7 @@ fn hook_already_present(root: &serde_json::Value, hook_command: &str) -> bool {
         .filter_map(|entry| entry.get("hooks")?.as_array())
         .flatten()
         .filter_map(|hook| hook.get("command")?.as_str())
-        .any(|cmd| {
-            cmd == hook_command || cmd == CLAUDE_HOOK_COMMAND || cmd.contains(REWRITE_HOOK_FILE)
-        })
+        .any(|cmd| cmd == hook_command || is_rtk_hook_command(cmd))
 }
 
 /// Default mode: hook + slim RTK.md + @RTK.md reference
@@ -1127,10 +1124,12 @@ fn run_default_mode(
     // 3. Patch CLAUDE.md (add @RTK.md, migrate if needed)
     let migrated = patch_claude_md(&claude_md_path, ctx)?;
 
+    let hook_command = resolve_absolute_hook_command("claude");
+
     // 4. Print success message (skip in dry-run)
     if !dry_run {
         println!("\nRTK hook registered (global).\n");
-        println!("  Command:   {}", CLAUDE_HOOK_COMMAND);
+        println!("  Command:   {}", hook_command);
         println!("  RTK.md:    {} (10 lines)", rtk_md_path.display());
         if let Some(path) = &opencode_plugin_path {
             println!("  OpenCode:  {}", path.display());
@@ -1143,9 +1142,9 @@ fn run_default_mode(
         }
     }
 
-    // 5. Patch settings.json with binary command
+    // 5. Patch settings.json with hook command
     let patch_result =
-        patch_settings_json_command(CLAUDE_HOOK_COMMAND, patch_mode, install_opencode, ctx)?;
+        patch_settings_json_command(&hook_command, patch_mode, install_opencode, ctx)?;
 
     // Report result
     if !dry_run {
@@ -1415,9 +1414,11 @@ fn run_hook_only_mode(
         None
     };
 
+    let hook_command = resolve_absolute_hook_command("claude");
+
     if !dry_run {
         println!("\nRTK hook registered (hook-only mode).\n");
-        println!("  Command: {}", CLAUDE_HOOK_COMMAND);
+        println!("  Command: {}", hook_command);
         if let Some(path) = &opencode_plugin_path {
             println!("  OpenCode: {}", path.display());
         }
@@ -1426,9 +1427,9 @@ fn run_hook_only_mode(
         );
     }
 
-    // Patch settings.json with binary command
+    // Patch settings.json with hook command
     let patch_result =
-        patch_settings_json_command(CLAUDE_HOOK_COMMAND, patch_mode, install_opencode, ctx)?;
+        patch_settings_json_command(&hook_command, patch_mode, install_opencode, ctx)?;
 
     // Report result
     if !dry_run {
@@ -2293,14 +2294,16 @@ fn install_cursor_hooks(ctx: InitContext) -> Result<()> {
         }
     }
 
+    let cursor_hook_command = resolve_absolute_hook_command("cursor");
+
     // Create or patch hooks.json with binary command
     let hooks_json_path = cursor_dir.join(HOOKS_JSON);
-    let patched = patch_cursor_hooks_json(&hooks_json_path, ctx)?;
+    let patched = patch_cursor_hooks_json(&hooks_json_path, &cursor_hook_command, ctx)?;
 
     // Report (skip in dry-run)
     if !dry_run {
         println!("\nCursor hook registered (global).\n");
-        println!("  Command:    {}", CURSOR_HOOK_COMMAND);
+        println!("  Command:    {}", cursor_hook_command);
         println!("  hooks.json: {}", hooks_json_path.display());
 
         if patched {
@@ -2317,7 +2320,7 @@ fn install_cursor_hooks(ctx: InitContext) -> Result<()> {
 
 /// Patch ~/.cursor/hooks.json to add RTK preToolUse hook.
 /// Returns true if the file was modified.
-fn patch_cursor_hooks_json(path: &Path, ctx: InitContext) -> Result<bool> {
+fn patch_cursor_hooks_json(path: &Path, hook_command: &str, ctx: InitContext) -> Result<bool> {
     let InitContext { verbose, dry_run } = ctx;
     let mut root = if path.exists() {
         let content = fs::read_to_string(path)
@@ -2340,7 +2343,7 @@ fn patch_cursor_hooks_json(path: &Path, ctx: InitContext) -> Result<bool> {
         return Ok(false);
     }
 
-    insert_cursor_hook_entry(&mut root)?;
+    insert_cursor_hook_entry(&mut root, hook_command)?;
 
     let serialized =
         serde_json::to_string_pretty(&root).context("Failed to serialize hooks.json")?;
@@ -2372,8 +2375,7 @@ fn patch_cursor_hooks_json(path: &Path, ctx: InitContext) -> Result<bool> {
     Ok(true)
 }
 
-/// Check if RTK preToolUse hook is already present in Cursor hooks.json
-/// Matches on legacy rtk-rewrite.sh path OR new `rtk hook cursor` command
+/// Check if RTK preToolUse hook is already present in Cursor hooks.json.
 fn cursor_hook_already_present(root: &serde_json::Value) -> bool {
     let hooks = match root
         .get("hooks")
@@ -2388,12 +2390,12 @@ fn cursor_hook_already_present(root: &serde_json::Value) -> bool {
         entry
             .get("command")
             .and_then(|c| c.as_str())
-            .is_some_and(|cmd| cmd.contains(REWRITE_HOOK_FILE) || cmd == CURSOR_HOOK_COMMAND)
+            .is_some_and(is_rtk_hook_command)
     })
 }
 
 /// Insert RTK preToolUse entry into Cursor hooks.json
-fn insert_cursor_hook_entry(root: &mut serde_json::Value) -> Result<()> {
+fn insert_cursor_hook_entry(root: &mut serde_json::Value, hook_command: &str) -> Result<()> {
     let root_obj = match root.as_object_mut() {
         Some(obj) => obj,
         None => {
@@ -2417,7 +2419,7 @@ fn insert_cursor_hook_entry(root: &mut serde_json::Value) -> Result<()> {
         .context("preToolUse value is not an array")?;
 
     pre_tool_use.push(serde_json::json!({
-        "command": CURSOR_HOOK_COMMAND,
+        "command": hook_command,
         "matcher": "Shell"
     }));
     Ok(())
@@ -2544,9 +2546,8 @@ fn remove_cursor_hooks(ctx: InitContext) -> Result<Vec<String>> {
     Ok(removed)
 }
 
-/// Remove RTK preToolUse entry from Cursor hooks.json
-/// Returns true if entry was found and removed
-/// Matches both legacy script path and new binary command
+/// Remove RTK preToolUse entry from Cursor hooks.json.
+/// Returns true if entry was found and removed.
 fn remove_cursor_hook_from_json(root: &mut serde_json::Value) -> bool {
     let pre_tool_use = match root
         .get_mut("hooks")
@@ -2562,7 +2563,7 @@ fn remove_cursor_hook_from_json(root: &mut serde_json::Value) -> bool {
         !entry
             .get("command")
             .and_then(|c| c.as_str())
-            .is_some_and(|cmd| cmd.contains(REWRITE_HOOK_FILE) || cmd == CURSOR_HOOK_COMMAND)
+            .is_some_and(is_rtk_hook_command)
     });
 
     pre_tool_use.len() < original_len
@@ -2600,7 +2601,10 @@ fn show_claude_config() -> Result<()> {
     };
 
     if binary_hook_registered {
-        println!("[ok] Hook: {} (native binary command)", CLAUDE_HOOK_COMMAND);
+        println!(
+            "[ok] Hook: {} (native binary command)",
+            resolve_absolute_hook_command("claude")
+        );
     } else if hook_path.exists() {
         #[cfg(unix)]
         {
@@ -2758,7 +2762,10 @@ fn show_claude_config() -> Result<()> {
         };
 
         if cursor_binary_registered {
-            println!("[ok] Cursor hook: registered in hooks.json");
+            println!(
+                "[ok] Cursor hook: {} (registered in hooks.json)",
+                resolve_absolute_hook_command("cursor")
+            );
         } else if cursor_hook.exists() {
             #[cfg(unix)]
             {
@@ -3231,6 +3238,7 @@ pub fn run_copilot(ctx: InitContext) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hooks::constants::CURSOR_HOOK_COMMAND;
     use tempfile::TempDir;
 
     #[test]
@@ -4092,7 +4100,7 @@ mod tests {
     #[test]
     fn test_insert_cursor_hook_entry_empty() {
         let mut json_content = serde_json::json!({ "version": 1 });
-        insert_cursor_hook_entry(&mut json_content).unwrap();
+        insert_cursor_hook_entry(&mut json_content, CURSOR_HOOK_COMMAND).unwrap();
 
         let hooks = json_content["hooks"]["preToolUse"].as_array().unwrap();
         assert_eq!(hooks.len(), 1);
@@ -4116,7 +4124,7 @@ mod tests {
             }
         });
 
-        insert_cursor_hook_entry(&mut json_content).unwrap();
+        insert_cursor_hook_entry(&mut json_content, CURSOR_HOOK_COMMAND).unwrap();
 
         let pre_tool_use = json_content["hooks"]["preToolUse"].as_array().unwrap();
         assert_eq!(pre_tool_use.len(), 2);

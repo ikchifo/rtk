@@ -244,15 +244,17 @@ fn print_rewrite(cmd: &str) {
 
 // ── Audit logging ─────────────────────────────────────────────
 
-/// Best-effort audit log when RTK_HOOK_AUDIT=1.
 fn audit_log(action: &str, original: &str, rewritten: &str) {
+    audit_log_with_agent(action, original, rewritten, None);
+}
+
+fn audit_log_with_agent(action: &str, original: &str, rewritten: &str, agent_id: Option<&str>) {
     if std::env::var("RTK_HOOK_AUDIT").as_deref() != Ok("1") {
         return;
     }
-    let _ = audit_log_inner(action, original, rewritten);
+    let _ = audit_log_inner(action, original, rewritten, agent_id);
 }
 
-/// Escape newlines to prevent log-line injection in the pipe-delimited audit log.
 fn sanitize_log_field(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('|', "\\|")
@@ -260,7 +262,12 @@ fn sanitize_log_field(s: &str) -> String {
         .replace('\r', "\\r")
 }
 
-fn audit_log_inner(action: &str, original: &str, rewritten: &str) -> Option<()> {
+fn audit_log_inner(
+    action: &str,
+    original: &str,
+    rewritten: &str,
+    agent_id: Option<&str>,
+) -> Option<()> {
     let home = dirs::home_dir()?;
     let dir = home.join(".local").join("share").join("rtk");
     std::fs::create_dir_all(&dir).ok()?;
@@ -271,13 +278,18 @@ fn audit_log_inner(action: &str, original: &str, rewritten: &str) -> Option<()> 
         .open(path)
         .ok()?;
     let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S");
+    let agent_suffix = match agent_id {
+        Some(id) => format!(" | agent:{}", sanitize_log_field(id)),
+        None => String::new(),
+    };
     writeln!(
         file,
-        "{} | {} | {} | {}",
+        "{} | {} | {} | {}{}",
         ts,
         action,
         sanitize_log_field(original),
-        sanitize_log_field(rewritten)
+        sanitize_log_field(rewritten),
+        agent_suffix
     )
     .ok()
 }
@@ -370,17 +382,19 @@ pub fn run_claude() -> Result<()> {
         }
     };
 
+    let agent_id = v.get("agent_id").and_then(|a| a.as_str());
+
     match process_claude_payload(&v) {
         PayloadAction::Rewrite {
             cmd,
             rewritten,
             output,
         } => {
-            audit_log("rewrite", &cmd, &rewritten);
+            audit_log_with_agent("rewrite", &cmd, &rewritten, agent_id);
             let _ = writeln!(io::stdout(), "{output}");
         }
         PayloadAction::Skip { reason, cmd } => {
-            audit_log(reason, &cmd, "");
+            audit_log_with_agent(reason, &cmd, "", agent_id);
         }
         PayloadAction::Ignore => {}
     }
@@ -886,10 +900,7 @@ mod tests {
         assert_eq!(strip_leading_bom("hello"), "hello");
         assert_eq!(strip_leading_bom("\u{feff}hello"), "hello");
         assert_eq!(strip_leading_bom("\u{feff}\u{feff}hello"), "hello");
-        assert_eq!(
-            strip_leading_bom("\u{feff}\u{feff}\u{feff}hello"),
-            "hello"
-        );
+        assert_eq!(strip_leading_bom("\u{feff}\u{feff}\u{feff}hello"), "hello");
         // BOM in the middle is preserved (not "leading").
         assert_eq!(strip_leading_bom("a\u{feff}b"), "a\u{feff}b");
     }
