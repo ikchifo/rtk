@@ -9,9 +9,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Deserialize)]
 struct RuffLocation {
-    #[allow(dead_code)]
     row: usize,
-    #[allow(dead_code)]
     column: usize,
 }
 
@@ -24,9 +22,7 @@ struct RuffFix {
 #[derive(Debug, Deserialize)]
 struct RuffDiagnostic {
     code: String,
-    #[allow(dead_code)]
     message: String,
-    #[allow(dead_code)]
     location: RuffLocation,
     #[allow(dead_code)]
     end_location: Option<RuffLocation>,
@@ -183,6 +179,28 @@ pub fn filter_ruff_check_json(output: &str) -> String {
 
     if file_counts.len() > 10 {
         result.push_str(&format!("\n... +{} more files\n", file_counts.len() - 10));
+    }
+
+    // List individual violations with file:line:col so an agent can navigate
+    // straight to each one — the rule/file grouping above is a summary, not a
+    // substitute for locations.
+    const MAX_VIOLATIONS: usize = 50;
+    result.push_str("\nViolations:\n");
+    for diag in diagnostics.iter().take(MAX_VIOLATIONS) {
+        result.push_str(&format!(
+            "  {}:{}:{} {} {}\n",
+            compact_path(&diag.filename),
+            diag.location.row,
+            diag.location.column,
+            diag.code,
+            truncate(diag.message.trim(), 100),
+        ));
+    }
+    if diagnostics.len() > MAX_VIOLATIONS {
+        result.push_str(&format!(
+            "  ... +{} more violations\n",
+            diagnostics.len() - MAX_VIOLATIONS
+        ));
     }
 
     if fixable_count > 0 {

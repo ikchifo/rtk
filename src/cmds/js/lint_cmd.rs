@@ -281,30 +281,44 @@ fn filter_eslint_json(output: &str) -> String {
         result.push('\n');
     }
 
-    // Show top files with most issues
-    result.push_str("Top files:\n");
-    for (file_result, count) in by_file.iter().take(10) {
-        let short_path = compact_path(&file_result.file_path);
-        result.push_str(&format!("  {} ({} issues)\n", short_path, count));
-
-        // Show top 3 rules in this file
-        let mut file_rules: HashMap<String, usize> = HashMap::new();
+    // Per-file violation list with line:col — the rule rollup above is a
+    // summary, but an agent fixing lint errors needs the exact locations.
+    // Capped so a huge codebase still compresses; the rollup carries the rest.
+    const MAX_VIOLATIONS: usize = 60;
+    let total_messages: usize = results.iter().map(|r| r.messages.len()).sum();
+    result.push_str("Violations:\n");
+    let mut shown = 0;
+    'outer: for (file_result, count) in by_file.iter().take(10) {
+        result.push_str(&format!(
+            "  {} ({}):\n",
+            compact_path(&file_result.file_path),
+            count
+        ));
         for msg in &file_result.messages {
-            if let Some(rule) = &msg.rule_id {
-                *file_rules.entry(rule.clone()).or_insert(0) += 1;
+            if shown >= MAX_VIOLATIONS {
+                result.push_str("    ...\n");
+                break 'outer;
             }
-        }
-
-        let mut file_rule_counts: Vec<_> = file_rules.iter().collect();
-        file_rule_counts.sort_by(|a, b| b.1.cmp(a.1));
-
-        for (rule, count) in file_rule_counts.iter().take(3) {
-            result.push_str(&format!("    {} ({})\n", rule, count));
+            let sev = if msg.severity >= 2 { "error" } else { "warning" };
+            let rule = msg.rule_id.as_deref().unwrap_or("-");
+            result.push_str(&format!(
+                "    {}:{} {} {} {}\n",
+                msg.line,
+                msg.column,
+                sev,
+                rule,
+                truncate(msg.message.trim(), 100),
+            ));
+            shown += 1;
         }
     }
-
     if by_file.len() > 10 {
-        result.push_str(&format!("\n... +{} more files\n", by_file.len() - 10));
+        result.push_str(&format!("  ... +{} more files\n", by_file.len() - 10));
+    } else if total_messages > MAX_VIOLATIONS {
+        result.push_str(&format!(
+            "  ... +{} more violations\n",
+            total_messages - MAX_VIOLATIONS
+        ));
     }
 
     result.trim().to_string()

@@ -23,12 +23,20 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
 
     let has_tb_flag = args.iter().any(|a| a.starts_with("--tb"));
     let has_quiet_flag = args.iter().any(|a| a == "-q" || a == "--quiet");
+    // Only treat a short `-r…` as pytest's report flag (not `--randomly-seed` etc.)
+    let has_report_flag = args.iter().any(|a| a.starts_with("-r") && !a.starts_with("--"));
 
     if !has_tb_flag {
         cmd.arg("--tb=short");
     }
     if !has_quiet_flag {
         cmd.arg("-q");
+    }
+    // Surface xfailed/xpassed (and their reasons) in the short summary section
+    // so the compact output can report expected failures and — crucially —
+    // unexpected passes (XPASS), which signal a behavior change.
+    if !has_report_flag {
+        cmd.arg("-rxX");
     }
 
     for arg in args {
@@ -53,6 +61,7 @@ pub(crate) fn filter_pytest_output(output: &str) -> String {
     let mut test_files: Vec<String> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
     let mut current_failure: Vec<String> = Vec::new();
+    let mut xfail_lines: Vec<String> = Vec::new();
     let mut summary_line = String::new();
 
     for line in output.lines() {
@@ -127,6 +136,9 @@ pub(crate) fn filter_pytest_output(output: &str) -> String {
                 // FAILED test lines
                 if trimmed.starts_with("FAILED") || trimmed.starts_with("ERROR") {
                     failures.push(trimmed.to_string());
+                } else if trimmed.starts_with("XFAIL") || trimmed.starts_with("XPASS") {
+                    // `-rxX` adds these: "XFAIL path::test - reason" / "XPASS path::test - reason"
+                    xfail_lines.push(trimmed.to_string());
                 }
             }
         }
@@ -138,19 +150,41 @@ pub(crate) fn filter_pytest_output(output: &str) -> String {
     }
 
     // Build compact output
-    build_pytest_summary(&summary_line, &test_files, &failures)
+    build_pytest_summary(&summary_line, &test_files, &failures, &xfail_lines)
 }
 
-fn build_pytest_summary(summary: &str, _test_files: &[String], failures: &[String]) -> String {
-    // Parse summary line
-    let (passed, failed, skipped) = parse_summary_line(summary);
+#[derive(Default)]
+struct PytestCounts {
+    passed: usize,
+    failed: usize,
+    skipped: usize,
+    xfailed: usize,
+    xpassed: usize,
+}
 
-    if failed == 0 && passed > 0 {
-        return format!("Pytest: {} passed", passed);
+fn build_pytest_summary(
+    summary: &str,
+    _test_files: &[String],
+    failures: &[String],
+    xfail_lines: &[String],
+) -> String {
+    let counts = parse_summary_line(summary);
+    let PytestCounts {
+        passed,
+        failed,
+        skipped,
+        xfailed,
+        xpassed,
+    } = counts;
+
+    if passed == 0 && failed == 0 && skipped == 0 && xfailed == 0 && xpassed == 0 {
+        return "Pytest: No tests collected".to_string();
     }
 
-    if passed == 0 && failed == 0 && skipped == 0 {
-        return "Pytest: No tests collected".to_string();
+    let extras_present = skipped > 0 || xfailed > 0 || xpassed > 0 || !xfail_lines.is_empty();
+
+    if failed == 0 && passed > 0 && !extras_present {
+        return format!("Pytest: {} passed", passed);
     }
 
     let mut result = String::new();
@@ -158,8 +192,26 @@ fn build_pytest_summary(summary: &str, _test_files: &[String], failures: &[Strin
     if skipped > 0 {
         result.push_str(&format!(", {} skipped", skipped));
     }
+    if xfailed > 0 {
+        result.push_str(&format!(", {} xfailed", xfailed));
+    }
+    if xpassed > 0 {
+        result.push_str(&format!(", {} xpassed", xpassed));
+    }
     result.push('\n');
     result.push_str("═══════════════════════════════════════\n");
+
+    // Surface xfail/xpass entries (with their reasons) — XPASS in particular
+    // signals that something expected-to-fail now passes.
+    if !xfail_lines.is_empty() {
+        result.push_str("\nExpected-failure outcomes:\n");
+        for line in xfail_lines.iter().take(10) {
+            result.push_str(&format!("  {}\n", truncate(line, 120)));
+        }
+        if xfail_lines.len() > 10 {
+            result.push_str(&format!("  ... +{} more\n", xfail_lines.len() - 10));
+        }
+    }
 
     if failures.is_empty() {
         return result.trim().to_string();
@@ -220,36 +272,35 @@ fn build_pytest_summary(summary: &str, _test_files: &[String], failures: &[Strin
     result.trim().to_string()
 }
 
-fn parse_summary_line(summary: &str) -> (usize, usize, usize) {
-    let mut passed = 0;
-    let mut failed = 0;
-    let mut skipped = 0;
+fn parse_summary_line(summary: &str) -> PytestCounts {
+    let mut counts = PytestCounts::default();
 
-    // Parse lines like "=== 4 passed, 1 failed in 0.50s ==="
-    let parts: Vec<&str> = summary.split(',').collect();
-
-    for part in parts {
+    // Parse lines like "=== 4 passed, 1 failed, 2 xfailed, 1 xpassed in 0.50s ==="
+    for part in summary.split(',') {
         let words: Vec<&str> = part.split_whitespace().collect();
         for (i, word) in words.iter().enumerate() {
-            if i > 0 {
-                if word.contains("passed") {
-                    if let Ok(n) = words[i - 1].parse::<usize>() {
-                        passed = n;
-                    }
-                } else if word.contains("failed") {
-                    if let Ok(n) = words[i - 1].parse::<usize>() {
-                        failed = n;
-                    }
-                } else if word.contains("skipped") {
-                    if let Ok(n) = words[i - 1].parse::<usize>() {
-                        skipped = n;
-                    }
-                }
+            if i == 0 {
+                continue;
+            }
+            let Ok(n) = words[i - 1].parse::<usize>() else {
+                continue;
+            };
+            // Order matters: "xpassed"/"xfailed" contain "passed"/"failed".
+            if word.contains("xpassed") {
+                counts.xpassed = n;
+            } else if word.contains("xfailed") {
+                counts.xfailed = n;
+            } else if word.contains("passed") {
+                counts.passed = n;
+            } else if word.contains("failed") {
+                counts.failed = n;
+            } else if word.contains("skipped") {
+                counts.skipped = n;
             }
         }
     }
 
-    (passed, failed, skipped)
+    counts
 }
 
 #[cfg(test)]
@@ -337,15 +388,41 @@ collected 0 items
 
     #[test]
     fn test_parse_summary_line() {
-        assert_eq!(parse_summary_line("=== 5 passed in 0.50s ==="), (5, 0, 0));
+        let c = parse_summary_line("=== 5 passed in 0.50s ===");
+        assert_eq!((c.passed, c.failed, c.skipped), (5, 0, 0));
+
+        let c = parse_summary_line("=== 4 passed, 1 failed in 0.50s ===");
+        assert_eq!((c.passed, c.failed, c.skipped), (4, 1, 0));
+
+        let c = parse_summary_line("=== 3 passed, 1 failed, 2 skipped in 1.0s ===");
+        assert_eq!((c.passed, c.failed, c.skipped), (3, 1, 2));
+
+        let c = parse_summary_line("=== 2 passed, 1 failed, 2 xfailed, 1 xpassed in 1.0s ===");
         assert_eq!(
-            parse_summary_line("=== 4 passed, 1 failed in 0.50s ==="),
-            (4, 1, 0)
+            (c.passed, c.failed, c.xfailed, c.xpassed),
+            (2, 1, 2, 1)
         );
-        assert_eq!(
-            parse_summary_line("=== 3 passed, 1 failed, 2 skipped in 1.0s ==="),
-            (3, 1, 2)
-        );
+    }
+
+    #[test]
+    fn test_filter_pytest_xfail_xpass() {
+        let output = r#"=== test session starts ===
+collected 5 items
+
+test_math.py ..xxX                                                 [100%]
+
+=== short test summary info ===
+XFAIL test_math.py::test_division_by_zero - known bug in division
+XFAIL test_math.py::test_float_precision - float precision issue — bug #42
+XPASS test_math.py::test_unexpected_pass - this should fail but currently passes
+=== 2 passed, 2 xfailed, 1 xpassed in 0.05s ==="#;
+
+        let result = filter_pytest_output(output);
+        assert!(result.contains("xfailed"), "got: {result}");
+        assert!(result.contains("xpassed"), "got: {result}");
+        assert!(result.contains("XPASS"), "got: {result}");
+        assert!(result.contains("float precision"), "got: {result}");
+        assert!(result.contains("test_division_by_zero"), "got: {result}");
     }
 
     #[test]

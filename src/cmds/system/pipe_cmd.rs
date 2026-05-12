@@ -16,6 +16,7 @@ pub fn resolve_filter(name: &str) -> Option<fn(&str) -> String> {
         "git-log" => Some(git_log_wrapper),
         "git-diff" => Some(git_diff_wrapper),
         "git-status" => Some(crate::cmds::git::git::format_status_output),
+        "log" => Some(crate::cmds::system::log_cmd::run_stdin_str),
         "mypy" => Some(crate::cmds::python::mypy_cmd::filter_mypy_output),
         "ruff-check" => Some(crate::cmds::python::ruff_cmd::filter_ruff_check_json),
         "ruff-format" => Some(crate::cmds::python::ruff_cmd::filter_ruff_format),
@@ -220,7 +221,7 @@ pub fn run(filter_name: Option<&str>, passthrough: bool) -> Result<()> {
             anyhow::anyhow!(
                 "Unknown filter '{}'. Available: cargo-test, pytest, go-test, go-build, \
                  tsc, vitest, grep, rg, find, fd, git-log, git-diff, git-status, \
-                 mypy, ruff-check, ruff-format, prettier",
+                 log, mypy, ruff-check, ruff-format, prettier",
                 name
             )
         })?,

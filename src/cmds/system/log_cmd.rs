@@ -81,17 +81,24 @@ fn analyze_logs(content: &str) -> String {
         let normalized =
             normalize_log_line(line, &TIMESTAMP_RE, &UUID_RE, &HEX_RE, &NUM_RE, &PATH_RE);
 
-        // Categorize
+        // Categorize. The error bucket also covers severity labels above ERROR
+        // (CRITICAL, FATAL, ALERT, EMERGENCY, SEVERE, PANIC) — these are the most
+        // important lines in a log and were previously dropped as noise when they
+        // didn't literally contain "error".
         if line_lower.contains("error")
             || line_lower.contains("fatal")
             || line_lower.contains("panic")
+            || line_lower.contains("critical")
+            || line_lower.contains("alert")
+            || line_lower.contains("emerg")
+            || line_lower.contains("severe")
         {
             let count = error_counts.entry(normalized.clone()).or_insert(0);
             if *count == 0 {
                 unique_errors.push(line.to_string());
             }
             *count += 1;
-        } else if line_lower.contains("warn") {
+        } else if line_lower.contains("warn") || line_lower.contains("notice") {
             let count = warn_counts.entry(normalized.clone()).or_insert(0);
             if *count == 0 {
                 unique_warnings.push(line.to_string());

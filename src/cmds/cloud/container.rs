@@ -54,14 +54,18 @@ where
 fn docker_ps(_verbose: u8) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
 
+    // Baseline the LLM would otherwise see.
     let raw = exec_capture(resolved_command("docker").args(["ps"]))
         .map(|r| r.stdout)
         .unwrap_or_default();
 
+    // One structured call over *all* containers (`-a`) — splitting on the State
+    // field lets us list crashed/exited ones too, which plain `docker ps` hides.
     let result = exec_capture(resolved_command("docker").args([
         "ps",
+        "-a",
         "--format",
-        "{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}",
+        "{{.State}}\t{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}",
     ]))
     .context("Failed to run docker ps")?;
 
@@ -71,43 +75,66 @@ fn docker_ps(_verbose: u8) -> Result<i32> {
         return Ok(result.exit_code);
     }
 
-    let stdout = result.stdout;
-    let mut rtk = String::new();
-
-    if stdout.trim().is_empty() {
-        rtk.push_str("[docker] 0 containers");
-        println!("{}", rtk);
-        timer.track("docker ps", "rtk docker ps", &raw, &rtk);
-        return Ok(0);
-    }
-
-    let count = stdout.lines().count();
-    rtk.push_str(&format!("[docker] {} containers:\n", count));
-
-    for line in stdout.lines().take(15) {
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() >= 4 {
-            let id = &parts[0][..12.min(parts[0].len())];
-            let name = parts[1];
-            let short_image = parts
-                .get(3)
-                .unwrap_or(&"")
-                .split('/')
-                .next_back()
-                .unwrap_or("");
-            let ports = compact_ports(parts.get(4).unwrap_or(&""));
+    let format_line = |parts: &[&str], with_ports: bool| -> Option<String> {
+        // parts: State, ID, Names, Status, Image, Ports
+        if parts.len() < 5 {
+            return None;
+        }
+        let id = &parts[1][..12.min(parts[1].len())];
+        let name = parts[2];
+        // Keep the Status verbatim — it carries health ("Up 4s (unhealthy)")
+        // and exit-code/restart info an agent needs to judge service health.
+        let status = parts[3].trim();
+        let short_image = parts[4].split('/').next_back().unwrap_or("");
+        let port_suffix = if with_ports {
+            let ports = compact_ports(parts.get(5).unwrap_or(&""));
             if ports == "-" {
-                rtk.push_str(&format!("  {} {} ({})\n", id, name, short_image));
+                String::new()
             } else {
-                rtk.push_str(&format!(
-                    "  {} {} ({}) [{}]\n",
-                    id, name, short_image, ports
-                ));
+                format!(" [{}]", ports)
             }
+        } else {
+            String::new()
+        };
+        Some(format!(
+            "  {} {} ({}) {}{}\n",
+            id, name, short_image, status, port_suffix
+        ))
+    };
+
+    let mut running: Vec<Vec<&str>> = Vec::new();
+    let mut stopped: Vec<Vec<&str>> = Vec::new();
+    for line in result.stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let parts: Vec<&str> = line.split('\t').collect();
+        let state = parts.first().copied().unwrap_or("");
+        if matches!(state, "running" | "restarting") {
+            running.push(parts);
+        } else {
+            stopped.push(parts);
         }
     }
-    if count > 15 {
-        rtk.push_str(&format!("  ... +{} more", count - 15));
+
+    let mut rtk = String::new();
+    rtk.push_str(&format!("[docker] {} running:\n", running.len()));
+    for parts in running.iter().take(20) {
+        if let Some(l) = format_line(parts, true) {
+            rtk.push_str(&l);
+        }
+    }
+    if running.len() > 20 {
+        rtk.push_str(&format!("  ... +{} more\n", running.len() - 20));
+    }
+
+    if !stopped.is_empty() {
+        rtk.push_str(&format!("[docker] {} stopped/exited:\n", stopped.len()));
+        for parts in stopped.iter().take(20) {
+            if let Some(l) = format_line(parts, false) {
+                rtk.push_str(&l);
+            }
+        }
+        if stopped.len() > 20 {
+            rtk.push_str(&format!("  ... +{} more\n", stopped.len() - 20));
+        }
     }
 
     print!("{}", rtk);
@@ -173,21 +200,22 @@ fn docker_images(_verbose: u8) -> Result<i32> {
         total_display
     ));
 
-    for line in lines.iter().take(15) {
+    // Show images with their full `repository:tag` name — truncating the
+    // registry/user prefix to "..." breaks exact-match lookups against
+    // deployment manifests and CI configs. The list is generously capped (a
+    // higher bound than before, and only the count, never the names, is
+    // abbreviated) so token savings still hold on machines with many images.
+    const MAX_IMAGES: usize = 60;
+    for line in lines.iter().take(MAX_IMAGES) {
         let parts: Vec<&str> = line.split('\t').collect();
         if !parts.is_empty() {
             let image = parts[0];
             let size = parts.get(1).unwrap_or(&"");
-            let short = if image.len() > 40 {
-                format!("...{}", &image[image.len() - 37..])
-            } else {
-                image.to_string()
-            };
-            rtk.push_str(&format!("  {} [{}]\n", short, size));
+            rtk.push_str(&format!("  {} [{}]\n", image, size));
         }
     }
-    if lines.len() > 15 {
-        rtk.push_str(&format!("  ... +{} more", lines.len() - 15));
+    if lines.len() > MAX_IMAGES {
+        rtk.push_str(&format!("  ... +{} more\n", lines.len() - MAX_IMAGES));
     }
 
     print!("{}", rtk);
@@ -526,8 +554,9 @@ pub fn run_docker_passthrough(args: &[OsString], verbose: u8) -> Result<i32> {
 pub fn run_compose_ps(verbose: u8) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
 
-    // Raw output for token tracking
-    let raw_result = exec_capture(resolved_command("docker").args(["compose", "ps"]))
+    // Use `-a` so stopped/exited services stay visible — a worker that crashed
+    // on startup must not silently vanish from the agent's view.
+    let raw_result = exec_capture(resolved_command("docker").args(["compose", "ps", "-a"]))
         .context("Failed to run docker compose ps")?;
 
     if !raw_result.success() {
@@ -540,6 +569,7 @@ pub fn run_compose_ps(verbose: u8) -> Result<i32> {
     let result = exec_capture(resolved_command("docker").args([
         "compose",
         "ps",
+        "-a",
         "--format",
         "{{.Name}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",
     ]))

@@ -14,8 +14,6 @@ pub const NOISE_DIRS: &[&str] = &[
     ".tox",
     ".venv",
     "venv",
-    "env",
-    ".env",
     "coverage",
     ".nyc_output",
     ".DS_Store",
