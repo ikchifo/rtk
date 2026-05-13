@@ -2288,7 +2288,7 @@ mod tests {
         assert!(matches!(
             classify_command("uv pip list"),
             Classification::Supported {
-                rtk_equivalent: "rtk pip",
+                rtk_equivalent: "rtk uv",
                 ..
             }
         ));
@@ -2346,7 +2346,7 @@ mod tests {
     fn test_rewrite_uv_pip_list() {
         assert_eq!(
             rewrite_command_no_prefixes("uv pip list", &[]),
-            Some("rtk pip list".into())
+            Some("rtk uv pip list".into())
         );
     }
 
