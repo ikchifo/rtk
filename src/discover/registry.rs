@@ -63,6 +63,8 @@ lazy_static! {
     // --git-dir <dir>, --work-tree <dir>, and flag-only options (#163)
     static ref GIT_GLOBAL_OPT: Regex =
         Regex::new(r"^(?:(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=\S+|\s+\S+)|--work-tree(?:=\S+|\s+\S+)|--no-pager|--no-optional-locks|--bare|--literal-pathspecs)\s+)+").unwrap();
+    static ref KUBECTL_GLOBAL_OPT: Regex =
+        Regex::new(r"(?:--context(?:=\S+|\s+\S+)|--namespace(?:=\S+|\s+\S+)|-n\s+\S+|--kubeconfig(?:=\S+|\s+\S+)|-s\s+\S+|--server(?:=\S+|\s+\S+)|--cluster(?:=\S+|\s+\S+)|--user(?:=\S+|\s+\S+)|--as(?:=\S+|\s+\S+))\s+").unwrap();
     // Issue #1362: each capture expects a SINGLE file argument (`\S+$`). Multi-file
     // invocations like `head -3 a b c` fail to match so the segment is passed through
     // to the native `head`/`tail` binary — which already handles multi-file with
@@ -123,6 +125,7 @@ pub fn classify_command(cmd: &str) -> Classification {
     // Strip golangci-lint global options before `run` so classify/rewrite stays
     // aligned with the runtime wrapper behavior.
     let cmd_normalized = strip_golangci_global_opts(&cmd_normalized);
+    let cmd_normalized = strip_kubectl_global_opts(&cmd_normalized);
     let cmd_clean = cmd_normalized.as_str();
 
     // Exclude cat/head/tail with redirect operators — these are writes, not reads (#315)
@@ -258,6 +261,20 @@ fn strip_git_global_opts(cmd: &str) -> String {
     let after_git = &cmd[4..]; // skip "git "
     let stripped = GIT_GLOBAL_OPT.replace(after_git, "");
     format!("git {}", stripped.trim())
+}
+
+/// Strip kubectl global options: kubectl --context X --namespace Y get pods -> kubectl get pods
+fn strip_kubectl_global_opts(cmd: &str) -> String {
+    if !cmd.starts_with("kubectl ") {
+        return cmd.to_string();
+    }
+    let after = &cmd["kubectl ".len()..];
+    let stripped = KUBECTL_GLOBAL_OPT.replace_all(after, "");
+    let result = stripped.trim();
+    if result.is_empty() {
+        return cmd.to_string();
+    }
+    format!("kubectl {}", result)
 }
 
 /// Strip golangci-lint global options before the `run` subcommand.
