@@ -20,8 +20,8 @@ use cmds::python::{mypy_cmd, pip_cmd, pytest_cmd, ruff_cmd, uv_cmd};
 use cmds::ruby::{rake_cmd, rspec_cmd, rubocop_cmd};
 use cmds::rust::{cargo_cmd, runner};
 use cmds::system::{
-    deps, env_cmd, find_cmd, format_cmd, grep_cmd, json_cmd, local_llm, log_cmd, ls, pipe_cmd,
-    read, summary, tree, wc_cmd,
+    deps, env_cmd, find_cmd, format_cmd, grep_cmd, jq_cmd, json_cmd, local_llm, log_cmd, ls,
+    pipe_cmd, read, summary, tree, wc_cmd,
 };
 
 use anyhow::{Context, Result};
@@ -249,6 +249,13 @@ enum Commands {
         /// Show keys only (strip all values, show structure)
         #[arg(long)]
         keys_only: bool,
+    },
+
+    /// jq with compressed JSON output
+    Jq {
+        /// jq arguments (filter + files + options)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 
     /// Summarize project dependencies
@@ -1707,6 +1714,8 @@ fn run_cli() -> Result<i32> {
             0
         }
 
+        Commands::Jq { args } => jq_cmd::run(&args, cli.verbose)?,
+
         Commands::Deps { path } => {
             deps::run(&path, cli.verbose)?;
             0
@@ -2525,6 +2534,7 @@ fn is_operational_command(cmd: &Commands) -> bool {
             | Commands::Err { .. }
             | Commands::Test { .. }
             | Commands::Json { .. }
+            | Commands::Jq { .. }
             | Commands::Deps { .. }
             | Commands::Env { .. }
             | Commands::Find { .. }

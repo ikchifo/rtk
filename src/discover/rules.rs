@@ -609,6 +609,15 @@ pub const RULES: &[RtkRule] = &[
         subcmd_status: &[],
     },
     RtkRule {
+        pattern: r"^jq\s+",
+        rtk_cmd: "rtk jq",
+        rewrite_prefixes: &["jq"],
+        category: "System",
+        savings_pct: 70.0,
+        subcmd_savings: &[],
+        subcmd_status: &[],
+    },
+    RtkRule {
         pattern: r"^fail2ban-client\b",
         rtk_cmd: "rtk fail2ban-client",
         rewrite_prefixes: &["fail2ban-client"],
