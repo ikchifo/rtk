@@ -290,6 +290,30 @@ pub fn run(
 
     let (patterns, paths, extra_args) = extract_pattern_path(&args);
 
+    // --files: list searchable files without pattern matching (rg --files).
+    if extra_args.iter().any(|a| a == "--files") {
+        let mut cmd = resolved_command("rg");
+        cmd.arg("--files");
+        if let Some(ft) = file_type {
+            cmd.arg("--type").arg(ft);
+        }
+        let search_paths = if paths.is_empty() {
+            vec![".".to_string()]
+        } else {
+            paths.clone()
+        };
+        cmd.args(&search_paths);
+        let result = exec_capture(&mut cmd)
+            .context("rg (ripgrep) not found -- install it: https://github.com/BurntSushi/ripgrep#installation")?;
+        print!("{}", result.stdout);
+        let path_display = search_paths.join(" ");
+        timer.track_passthrough(
+            &format!("grep --files {}", path_display),
+            &format!("rtk grep --files {}", path_display),
+        );
+        return Ok(result.exit_code);
+    }
+
     if patterns.is_empty() {
         eprintln!("rtk grep: pattern required (positional or -e)");
         return Ok(1);
@@ -1207,5 +1231,10 @@ mod tests {
             );
         }
         // If rg is not installed, skip gracefully (test still passes)
+    }
+
+    #[test]
+    fn test_files_flag_is_format_flag() {
+        assert!(has_format_flag(&["--files".to_string()]));
     }
 }
