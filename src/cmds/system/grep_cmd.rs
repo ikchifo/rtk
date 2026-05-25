@@ -33,19 +33,10 @@ pub fn run(
     // Without this, rg returns 0 matches for files in .gitignore, causing
     // false negatives that make AI agents draw wrong conclusions.
     // Using --no-ignore-vcs (not --no-ignore) so .ignore/.rgignore are still respected.
-    //
-    // -H: force rg to always include the filename, even for single-file searches.
-    // --null: separate file from line:content with a NUL byte so the parser is
-    // unambiguous even when the filename or content contains `:digits:`
-    // patterns (issue #1436).
-    rg_cmd.args([
-        "-nH",
-        "--no-heading",
-        "--null",
-        "--no-ignore-vcs",
-        &rg_pattern,
-        path,
-    ]);
+    // -H: always emit the filename.
+    // -0: NUL-separate filename. Allows the parser to disambiguate filenames or
+    // content containing `:digits:` patterns (issue #1436).
+    rg_cmd.args(["-nH0", "--no-heading", "--no-ignore-vcs", &rg_pattern, path]);
 
     if let Some(ft) = file_type {
         rg_cmd.arg("--type").arg(ft);
@@ -62,9 +53,7 @@ pub fn run(
     let result = exec_capture(&mut rg_cmd)
         .or_else(|_| {
             let mut grep_cmd = resolved_command("grep");
-            // -H: always emit the filename; -Z: NUL-separate filename from
-            // line:content so the parser can disambiguate even for filenames
-            // or content containing `:digits:` (parity with rg's --null).
+            // When we fall back to grep, include all args, not just -rnHZ.
             grep_cmd.args(["-rnHZ", pattern, path]).args(extra_args);
             exec_capture(&mut grep_cmd)
         })
@@ -173,9 +162,9 @@ pub fn run(
 
 /// Parses a single rg/grep match line of the form `file\0line_number:content`.
 ///
-/// Requires the underlying command to be invoked with `--null` (rg) or `-Z`
-/// (grep) so the filename is NUL-separated from `line:content`. NUL cannot
-/// appear in file paths, so the parser is unambiguous regardless of:
+/// Requires the underlying command to be invoked with `-0` (rg) or `-Z` (grep)
+/// so the filename is NUL-separated from `line:content`. NUL cannot appear in
+/// file paths, so the parser is unambiguous regardless of:
 ///   - content with `:` or `::` (e.g. `ClassRegistry::init(...)`, issue #1436);
 ///   - paths with embedded `:` (Windows drive letters, weird filenames like
 ///     `badly_named:52:file.txt`).
