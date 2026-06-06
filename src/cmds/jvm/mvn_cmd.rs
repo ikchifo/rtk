@@ -1517,14 +1517,18 @@ mod tests {
 
     // ── CRLF line-ending compatibility ───────────────────────────────────────
 
-    /// `str::lines()` splits on `\n` but keeps any trailing `\r`, so exact
-    /// equality / `starts_with("…")` checks can silently fail under Windows
-    /// line endings. Convert an LF fixture to CRLF, filter both, normalise
-    /// the CRLF output back to LF, and assert byte-equality.
+    /// `str::lines()` strips single `\r\n` pairs entirely, so real Maven CRLF
+    /// output filters cleanly. The hazard is a fixture *already checked out
+    /// with CRLF* (e.g. `core.autocrlf=true` without `.gitattributes`): the
+    /// `\n` → `\r\n` synthesis below would then produce `\r\r\n`, leaving a
+    /// stray `\r` per line that `$`-anchored regexes reject. Normalise the
+    /// embedded fixture back to LF first — correct regardless of checkout
+    /// state (defense-in-depth alongside `tests/fixtures/** -text`).
     #[test]
     fn surefire_handles_crlf_line_endings() {
-        let i_lf = include_str!("../../../tests/fixtures/mvn_test_pass_slice_raw.txt");
-        let o_lf = filter_surefire(i_lf);
+        let i_lf = include_str!("../../../tests/fixtures/mvn_test_pass_slice_raw.txt")
+            .replace("\r\n", "\n");
+        let o_lf = filter_surefire(&i_lf);
         let i_crlf = i_lf.replace('\n', "\r\n");
         let o_crlf = filter_surefire(&i_crlf);
         assert_eq!(
@@ -1536,8 +1540,9 @@ mod tests {
 
     #[test]
     fn package_handles_crlf_line_endings() {
-        let i_lf = include_str!("../../../tests/fixtures/mvn_install_slice_raw.txt");
-        let o_lf = filter_package(i_lf);
+        let i_lf = include_str!("../../../tests/fixtures/mvn_install_slice_raw.txt")
+            .replace("\r\n", "\n");
+        let o_lf = filter_package(&i_lf);
         let i_crlf = i_lf.replace('\n', "\r\n");
         let o_crlf = filter_package(&i_crlf);
         assert_eq!(
@@ -2024,4 +2029,5 @@ mod tests {
         );
     }
 }
+
 
