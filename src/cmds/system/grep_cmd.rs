@@ -1,9 +1,9 @@
 //! Filters grep output by grouping matches by file.
 
+use crate::core::args_utils;
 use crate::core::stream::exec_capture;
 use crate::core::tracking;
 use crate::core::utils::resolved_command;
-use crate::core::{args_utils, config};
 use anyhow::{Context, Result};
 use regex::Regex;
 use std::collections::HashMap;
@@ -254,6 +254,7 @@ fn extract_pattern_path<T: AsRef<str>>(args: &[T]) -> (Vec<String>, Vec<String>,
 pub fn run(
     max_line_len: usize,
     max_results: usize,
+    max_per_file: usize,
     context_only: bool,
     file_type: Option<&str>,
     args: &[String],
@@ -468,14 +469,13 @@ pub fn run(
     let mut files: Vec<_> = by_file.iter().collect();
     files.sort_by_key(|(f, _)| *f);
 
-    let per_file = config::limits().grep_max_per_file;
     for (file, matches) in files {
         if shown >= max_results {
             break;
         }
 
         let file_display = compact_path(file);
-        for (line_num, content) in matches.iter().take(per_file) {
+        for (line_num, content) in matches.iter().take(max_per_file) {
             if shown >= max_results {
                 break;
             }
@@ -617,6 +617,7 @@ fn is_grep_error_exit(exit_code: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config;
 
     #[test]
     fn test_is_grep_error_exit() {

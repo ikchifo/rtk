@@ -23,6 +23,7 @@ use cmds::system::{
     deps, env_cmd, find_cmd, format_cmd, grep_cmd, jq_cmd, json_cmd, local_llm, log_cmd, ls,
     pipe_cmd, read, summary, tree, wc_cmd,
 };
+use discover::provider::TranscriptProvider;
 
 use anyhow::{Context, Result};
 use clap::error::ErrorKind;
@@ -51,6 +52,13 @@ pub enum AgentTarget {
     Hermes,
 }
 
+/// Output limits tuned for a specific coding-agent transcript surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OutputProfile {
+    /// Keep routine source reads and searches compact for Codex tool calls.
+    Codex,
+}
+
 #[derive(Parser)]
 #[command(
     name = "rtk",
@@ -69,6 +77,10 @@ struct Cli {
     /// Ultra-compact mode: ASCII icons, inline format (Level 2 optimizations)
     #[arg(long, global = true)]
     ultra_compact: bool,
+
+    /// Apply output limits tuned for a coding-agent transcript surface
+    #[arg(long, global = true, value_enum)]
+    profile: Option<OutputProfile>,
 
     /// Set SKIP_ENV_VALIDATION=1 for child processes (Next.js, tsc, lint, prisma)
     #[arg(long = "skip-env", global = true)]
@@ -102,6 +114,9 @@ enum Commands {
         /// Max lines
         #[arg(short, long, conflicts_with = "tail_lines")]
         max_lines: Option<usize>,
+        /// Inclusive, one-based source line range (START:END)
+        #[arg(long, value_name = "START:END")]
+        line_range: Option<read::LineRange>,
         /// Keep only last N lines
         #[arg(long, conflicts_with = "max_lines")]
         tail_lines: Option<usize>,
@@ -333,8 +348,8 @@ enum Commands {
         #[arg(short = 'l', long, default_value = "80")]
         max_len: usize,
         /// Max results to show
-        #[arg(short, long, default_value = "200")]
-        max: usize,
+        #[arg(short, long)]
+        max: Option<usize>,
         /// Show only match context (not full line)
         #[arg(long)]
         context_only: bool,
@@ -577,7 +592,7 @@ enum Commands {
         args: Vec<String>,
     },
 
-    /// Discover missed RTK savings from Claude Code history
+    /// Discover missed RTK savings from coding-agent history
     Discover {
         /// Filter by project path (substring match)
         #[arg(short, long)]
@@ -594,10 +609,17 @@ enum Commands {
         /// Output format: text, json
         #[arg(short, long, default_value = "text")]
         format: String,
+        /// Transcript source to scan
+        #[arg(long, value_enum, default_value_t = TranscriptProvider::Claude)]
+        agent: TranscriptProvider,
     },
 
-    /// Show RTK adoption across Claude Code sessions
-    Session {},
+    /// Show RTK adoption across coding-agent sessions
+    Session {
+        /// Transcript source to scan
+        #[arg(long, value_enum, default_value_t = TranscriptProvider::Claude)]
+        agent: TranscriptProvider,
+    },
 
     /// Manage telemetry consent and data (RGPD/GDPR)
     Telemetry {
@@ -1234,6 +1256,20 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
         parse_error.exit();
     }
 
+    // Normalize the narrow set of common generic fallbacks that have native
+    // RTK routes. Spawn the current binary so the canonical route receives the
+    // same Clap parsing, tracking, and output handling as a direct invocation.
+    if let Some(canonical_args) = discover::registry::canonicalize_rtk_fallback_args(&args) {
+        let current_exe = std::env::current_exe()
+            .context("failed to locate the RTK executable for a fallback alias")?;
+        let status = std::process::Command::new(current_exe)
+            .args(&canonical_args)
+            .status()
+            .context("failed to execute canonical RTK fallback alias")?;
+        let label = format!("rtk {}", canonical_args.join(" "));
+        return Ok(core::utils::exit_code_from_status(&status, &label));
+    }
+
     let raw_command = args.join(" ");
     let error_message = core::utils::strip_ansi(&parse_error.to_string());
 
@@ -1495,6 +1531,35 @@ where
     }
 }
 
+fn effective_read_max_lines(
+    profile: Option<OutputProfile>,
+    line_range: Option<read::LineRange>,
+    max_lines: Option<usize>,
+    tail_lines: Option<usize>,
+) -> Option<usize> {
+    if matches!(profile, Some(OutputProfile::Codex))
+        && line_range.is_none()
+        && max_lines.is_none()
+        && tail_lines.is_none()
+    {
+        Some(core::config::CODEX_READ_MAX_LINES)
+    } else {
+        max_lines
+    }
+}
+
+fn effective_grep_limits(profile: Option<OutputProfile>, max: Option<usize>) -> (usize, usize) {
+    let limits = core::config::limits();
+    if matches!(profile, Some(OutputProfile::Codex)) && max.is_none() {
+        core::config::codex_grep_limits()
+    } else {
+        (
+            max.unwrap_or(limits.grep_max_results),
+            limits.grep_max_per_file,
+        )
+    }
+}
+
 fn run_cli() -> Result<i32> {
     // Fire-and-forget telemetry ping (1/day, non-blocking)
     core::telemetry::maybe_ping();
@@ -1532,9 +1597,12 @@ fn run_cli() -> Result<i32> {
             files,
             level,
             max_lines,
+            line_range,
             tail_lines,
             line_numbers,
         } => {
+            let max_lines =
+                effective_read_max_lines(cli.profile, line_range, max_lines, tail_lines);
             let mut had_error = false;
             let mut stdin_seen = false;
             for file in &files {
@@ -1544,11 +1612,19 @@ fn run_cli() -> Result<i32> {
                         continue;
                     }
                     stdin_seen = true;
-                    read::run_stdin(level, max_lines, tail_lines, line_numbers, cli.verbose)
+                    read::run_stdin(
+                        level,
+                        line_range,
+                        max_lines,
+                        tail_lines,
+                        line_numbers,
+                        cli.verbose,
+                    )
                 } else {
                     read::run(
                         file,
                         level,
+                        line_range,
                         max_lines,
                         tail_lines,
                         line_numbers,
@@ -1900,14 +1976,18 @@ fn run_cli() -> Result<i32> {
             context_only,
             file_type,
             extra_args,
-        } => grep_cmd::run(
-            max_len,
-            max,
-            context_only,
-            file_type.as_deref(),
-            &extra_args,
-            cli.verbose,
-        )?,
+        } => {
+            let (max_results, max_per_file) = effective_grep_limits(cli.profile, max);
+            grep_cmd::run(
+                max_len,
+                max_results,
+                max_per_file,
+                context_only,
+                file_type.as_deref(),
+                &extra_args,
+                cli.verbose,
+            )?
+        }
 
         Commands::Init {
             global,
@@ -2160,13 +2240,22 @@ fn run_cli() -> Result<i32> {
             all,
             since,
             format,
+            agent,
         } => {
-            discover::run(project.as_deref(), all, since, limit, &format, cli.verbose)?;
+            discover::run(
+                project.as_deref(),
+                all,
+                since,
+                limit,
+                &format,
+                cli.verbose,
+                &agent,
+            )?;
             0
         }
 
-        Commands::Session {} => {
-            analytics::session_cmd::run(cli.verbose)?;
+        Commands::Session { agent } => {
+            analytics::session_cmd::run(cli.verbose, &agent)?;
             0
         }
 
@@ -2651,6 +2740,98 @@ mod tests {
     use std::cell::Cell;
 
     #[test]
+    fn test_codex_profile_read_range_parses() {
+        let cli = Cli::try_parse_from([
+            "rtk",
+            "--profile",
+            "codex",
+            "read",
+            "--line-range",
+            "10:20",
+            "src/main.rs",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.profile, Some(OutputProfile::Codex));
+        match cli.command {
+            Commands::Read {
+                line_range,
+                max_lines,
+                tail_lines,
+                ..
+            } => {
+                assert_eq!(line_range, Some(read::LineRange { start: 10, end: 20 }));
+                assert_eq!(max_lines, None);
+                assert_eq!(tail_lines, None);
+            }
+            _ => panic!("expected read command"),
+        }
+    }
+
+    #[test]
+    fn test_codex_read_profile_adds_only_default_window() {
+        assert_eq!(
+            effective_read_max_lines(Some(OutputProfile::Codex), None, None, None),
+            Some(core::config::CODEX_READ_MAX_LINES)
+        );
+        assert_eq!(
+            effective_read_max_lines(
+                Some(OutputProfile::Codex),
+                Some(read::LineRange { start: 10, end: 20 }),
+                None,
+                None,
+            ),
+            None
+        );
+        assert_eq!(
+            effective_read_max_lines(Some(OutputProfile::Codex), None, Some(40), None),
+            Some(40)
+        );
+        assert_eq!(
+            effective_read_max_lines(Some(OutputProfile::Codex), None, None, Some(40)),
+            None
+        );
+        assert_eq!(effective_read_max_lines(None, None, None, None), None);
+    }
+
+    #[test]
+    fn test_codex_grep_profile_uses_compact_defaults() {
+        assert_eq!(
+            effective_grep_limits(Some(OutputProfile::Codex), None),
+            core::config::codex_grep_limits()
+        );
+
+        let defaults = core::config::limits();
+        assert_eq!(
+            effective_grep_limits(Some(OutputProfile::Codex), Some(75)),
+            (75, defaults.grep_max_per_file)
+        );
+        assert_eq!(
+            effective_grep_limits(None, None),
+            (defaults.grep_max_results, defaults.grep_max_per_file)
+        );
+    }
+
+    #[test]
+    fn test_codex_transcript_source_parses_for_discover_and_session() {
+        let discover =
+            Cli::try_parse_from(["rtk", "discover", "--agent", "codex", "--all"]).unwrap();
+        match discover.command {
+            Commands::Discover { agent, all, .. } => {
+                assert_eq!(agent, TranscriptProvider::Codex);
+                assert!(all);
+            }
+            _ => panic!("expected discover command"),
+        }
+
+        let session = Cli::try_parse_from(["rtk", "session", "--agent", "codex"]).unwrap();
+        match session.command {
+            Commands::Session { agent } => assert_eq!(agent, TranscriptProvider::Codex),
+            _ => panic!("expected session command"),
+        }
+    }
+
+    #[test]
     fn test_git_commit_single_message() {
         let cli = Cli::try_parse_from(["rtk", "git", "commit", "-m", "fix: typo"]).unwrap();
         match cli.command {
@@ -2976,6 +3157,8 @@ mod tests {
             "gh",
             "glab",
             "aws",
+            "gcloud",
+            "gsutil",
             "psql",
             "pnpm",
             "err",
@@ -2990,6 +3173,7 @@ mod tests {
             "oc",
             "summary",
             "grep",
+            "jq",
             "wget",
             "wc",
             "jest",
@@ -3012,6 +3196,7 @@ mod tests {
             "rubocop",
             "rspec",
             "pip",
+            "uv",
             "go",
             "gt",
             "golangci-lint",

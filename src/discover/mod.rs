@@ -1,5 +1,7 @@
 //! Scans AI coding sessions to find commands that could benefit from RTK filtering.
 
+// Rust guideline compliant 2026-02-21
+
 pub mod lexer;
 pub mod provider;
 pub mod registry;
@@ -9,7 +11,7 @@ pub mod rules;
 use anyhow::Result;
 use std::collections::HashMap;
 
-use provider::{ClaudeProvider, SessionProvider};
+use provider::SessionProvider;
 use registry::{
     category_avg_tokens, classify_command, split_command_chain, strip_disabled_prefix,
     Classification,
@@ -47,20 +49,15 @@ pub fn run(
     limit: usize,
     format: &str,
     verbose: u8,
+    provider: &dyn SessionProvider,
 ) -> Result<()> {
-    let provider = ClaudeProvider;
-
     // Determine project filter
     let project_filter = if all {
         None
     } else if let Some(p) = project {
         Some(p.to_string())
     } else {
-        // Default: current working directory
-        let cwd = std::env::current_dir()?;
-        let cwd_str = cwd.to_string_lossy().to_string();
-        let encoded = ClaudeProvider::encode_project_path(&cwd_str);
-        Some(encoded)
+        provider.default_project_filter()?
     };
 
     let sessions = provider.discover_sessions(project_filter.as_deref(), Some(since_days))?;
@@ -104,7 +101,7 @@ pub fn run(
                     match classify_command(actual_cmd) {
                         Classification::Supported { .. } => {
                             rtk_disabled_count += 1;
-                            let display = truncate_command(actual_cmd);
+                            let display = command_for_report(ext_cmd, actual_cmd);
                             *rtk_disabled_cmds.entry(display).or_insert(0) += 1;
                         }
                         _ => {
@@ -152,7 +149,7 @@ pub fn run(
                         bucket.total_raw_output_tokens += output_tokens;
 
                         // Track the display name with status
-                        let display_name = truncate_command(part);
+                        let display_name = command_for_report(ext_cmd, part);
                         let entry = bucket
                             .command_counts
                             .entry(format!("{}:{:?}", display_name, status))
@@ -160,10 +157,15 @@ pub fn run(
                         *entry += 1;
                     }
                     Classification::Unsupported { base_command } => {
+                        let base_command = if ext_cmd.hide_arguments_in_reports {
+                            redacted_command_name(part)
+                        } else {
+                            base_command
+                        };
                         let bucket = unsupported_map.entry(base_command).or_insert_with(|| {
                             UnsupportedBucket {
                                 count: 0,
-                                example: part.to_string(),
+                                example: command_for_report(ext_cmd, part),
                             }
                         });
                         bucket.count += 1;
@@ -254,6 +256,7 @@ pub fn run(
     };
 
     let report = DiscoverReport {
+        session_source: provider.display_name().to_string(),
         sessions_scanned: sessions.len(),
         total_commands,
         already_rtk,
@@ -293,5 +296,68 @@ fn truncate_command(cmd: &str) -> String {
         0 => String::new(),
         1 => parts[0].to_string(),
         _ => format!("{} {}", parts[0], parts[1]),
+    }
+}
+
+fn command_for_report(command: &provider::ExtractedCommand, part: &str) -> String {
+    if command.hide_arguments_in_reports {
+        redacted_command_name(part)
+    } else {
+        truncate_command(part)
+    }
+}
+
+fn redacted_command_name(command: &str) -> String {
+    for token in command.split_whitespace() {
+        if token.contains('=') || token.starts_with('-') || matches!(token, "env" | "command") {
+            continue;
+        }
+
+        let name = token.rsplit('/').next().unwrap_or(token);
+        if name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        {
+            return name.to_string();
+        }
+        return "command".to_string();
+    }
+
+    "command".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discover::provider::ExtractedCommand;
+
+    #[test]
+    fn codex_report_display_omits_arguments() {
+        let command = ExtractedCommand {
+            command: "echo lemon".to_string(),
+            output_len: None,
+            session_id: "test".to_string(),
+            output_content: None,
+            is_error: false,
+            sequence_index: 0,
+            hide_arguments_in_reports: true,
+        };
+
+        assert_eq!(command_for_report(&command, &command.command), "echo");
+    }
+
+    #[test]
+    fn claude_report_display_keeps_existing_two_word_format() {
+        let command = ExtractedCommand {
+            command: "git status --short".to_string(),
+            output_len: None,
+            session_id: "test".to_string(),
+            output_content: None,
+            is_error: false,
+            sequence_index: 0,
+            hide_arguments_in_reports: false,
+        };
+
+        assert_eq!(command_for_report(&command, &command.command), "git status");
     }
 }

@@ -44,6 +44,139 @@ pub fn category_avg_tokens(category: &str, subcmd: &str) -> usize {
     }
 }
 
+/// Canonicalize safe explicit RTK fallback aliases.
+///
+/// `args` must begin with the command passed after `rtk` and must already be
+/// split into shell arguments. Only aliases with equivalent RTK behavior are
+/// accepted; unsupported, multi-path, flagged, and redirect-like forms return
+/// `None` so the caller can preserve native fallback behavior.
+pub fn canonicalize_rtk_fallback_args(args: &[String]) -> Option<Vec<String>> {
+    if args.iter().any(|arg| is_redirect_like(arg)) {
+        return None;
+    }
+
+    let prefix_len = leading_global_prefix_len(args);
+    let mut canonical = canonicalize_alias_args(&args[prefix_len..])?;
+    let mut result = args[..prefix_len].to_vec();
+    result.append(&mut canonical);
+    Some(result)
+}
+
+fn canonicalize_alias_args(args: &[String]) -> Option<Vec<String>> {
+    match args.first()?.as_str() {
+        "rg" => {
+            let mut canonical = Vec::with_capacity(args.len());
+            canonical.push("grep".to_string());
+            canonical.extend(args[1..].iter().cloned());
+            Some(canonical)
+        }
+        "cat" => canonicalize_cat_alias(args),
+        "head" => canonicalize_line_alias(args, "head", "--line-range"),
+        "tail" => canonicalize_line_alias(args, "tail", "--tail-lines"),
+        _ => None,
+    }
+}
+
+fn leading_global_prefix_len(args: &[String]) -> usize {
+    let mut index = 0;
+
+    while let Some(arg) = args.get(index) {
+        match arg.as_str() {
+            "--ultra-compact" | "--skip-env" | "--verbose" => index += 1,
+            "--profile" if args.get(index + 1).is_some() => index += 2,
+            _ if arg.starts_with("--profile=") || is_short_verbose_flag(arg) => index += 1,
+            _ => break,
+        }
+    }
+
+    index
+}
+
+fn is_short_verbose_flag(arg: &str) -> bool {
+    let Some(flags) = arg.strip_prefix('-') else {
+        return false;
+    };
+
+    !flags.is_empty() && flags.bytes().all(|flag| flag == b'v')
+}
+
+fn canonicalize_cat_alias(args: &[String]) -> Option<Vec<String>> {
+    let [_, path] = args else {
+        return None;
+    };
+
+    if !is_safe_single_path(path) {
+        return None;
+    }
+
+    Some(vec!["read".to_string(), path.clone()])
+}
+
+fn canonicalize_line_alias(
+    args: &[String],
+    command: &str,
+    output_flag: &str,
+) -> Option<Vec<String>> {
+    let (count, path) = match args {
+        [received_command, long_count, path]
+            if received_command == command && long_count.starts_with("--lines=") =>
+        {
+            (long_count.strip_prefix("--lines=")?, path)
+        }
+        [received_command, short_count, path] if received_command == command => {
+            (short_count.strip_prefix('-')?, path)
+        }
+        [received_command, flag, count, path] if received_command == command && flag == "-n" => {
+            (count.as_str(), path)
+        }
+        _ => return None,
+    };
+
+    if !is_line_count(count) || !is_safe_single_path(path) {
+        return None;
+    }
+
+    let count = if command == "head" {
+        format!("1:{count}")
+    } else {
+        count.to_string()
+    };
+
+    Some(vec![
+        "read".to_string(),
+        output_flag.to_string(),
+        count,
+        path.clone(),
+    ])
+}
+
+fn is_line_count(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value.parse::<usize>().is_ok()
+}
+
+fn is_safe_single_path(path: &str) -> bool {
+    !path.is_empty() && !path.starts_with('-') && !is_redirect_like(path)
+}
+
+fn is_redirect_like(arg: &str) -> bool {
+    if arg.starts_with('>')
+        || arg.starts_with('<')
+        || arg.starts_with("&>")
+        || arg.starts_with("&<")
+    {
+        return true;
+    }
+
+    let fd_prefix_len = arg.bytes().take_while(|byte| byte.is_ascii_digit()).count();
+    fd_prefix_len > 0
+        && matches!(
+            arg.as_bytes().get(fd_prefix_len).copied(),
+            Some(b'>') | Some(b'<')
+        )
+}
+
 lazy_static! {
     static ref REGEX_SET: RegexSet =
         RegexSet::new(RULES.iter().map(|r| r.pattern)).expect("invalid regex patterns");
@@ -68,7 +201,7 @@ lazy_static! {
     // Issue #1362: each capture expects a SINGLE file argument (`\S+$`). Multi-file
     // invocations like `head -3 a b c` fail to match so the segment is passed through
     // to the native `head`/`tail` binary — which already handles multi-file with
-    // `==> name <==` banners that `rtk read --max-lines` cannot reproduce.
+    // `==> name <==` banners that `rtk read --line-range` cannot reproduce.
     static ref HEAD_N: Regex = Regex::new(r"^head\s+-(\d+)\s+(\S+)$").unwrap();
     static ref HEAD_LINES: Regex = Regex::new(r"^head\s+--lines=(\d+)\s+(\S+)$").unwrap();
     static ref TAIL_N: Regex = Regex::new(r"^tail\s+-(\d+)\s+(\S+)$").unwrap();
@@ -647,7 +780,7 @@ fn rewrite_line_range(cmd: &str) -> Option<String> {
         if let Some(caps) = re.captures(cmd) {
             let n = caps.get(1)?.as_str();
             let file = caps.get(2)?.as_str();
-            return Some(format!("rtk read {} --max-lines {}", file, n));
+            return Some(format!("rtk read --line-range 1:{} {}", n, file));
         }
     }
     if cmd.starts_with("head -") {
@@ -896,6 +1029,10 @@ fn strip_word_prefix<'a>(cmd: &'a str, prefix: &str) -> Option<&'a str> {
 mod tests {
     use super::super::report::RtkStatus;
     use super::*;
+
+    fn fallback_args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| (*arg).to_string()).collect()
+    }
 
     fn rewrite_command_no_prefixes(cmd: &str, excluded: &[String]) -> Option<String> {
         super::rewrite_command(cmd, excluded, &[])
@@ -1773,14 +1910,211 @@ mod tests {
         );
     }
 
+    // --- Explicit RTK fallback aliases ---
+
+    #[test]
+    fn test_canonicalize_fallback_rg_alias() {
+        let args = fallback_args(&["rg", "-n", "needle", "src"]);
+
+        assert_eq!(
+            canonicalize_rtk_fallback_args(&args),
+            Some(fallback_args(&["grep", "-n", "needle", "src"]))
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_alias_preserves_leading_codex_profile() {
+        let args = fallback_args(&["--profile", "codex", "rg", "-n", "needle", "src"]);
+
+        assert_eq!(
+            canonicalize_rtk_fallback_args(&args),
+            Some(fallback_args(&[
+                "--profile",
+                "codex",
+                "grep",
+                "-n",
+                "needle",
+                "src",
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_rg_without_arguments() {
+        let args = fallback_args(&["rg"]);
+
+        assert_eq!(
+            canonicalize_rtk_fallback_args(&args),
+            Some(fallback_args(&["grep"]))
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_cat_alias() {
+        let args = fallback_args(&["cat", "src/main.rs"]);
+
+        assert_eq!(
+            canonicalize_rtk_fallback_args(&args),
+            Some(fallback_args(&["read", "src/main.rs"]))
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_head_short_count() {
+        let args = fallback_args(&["head", "-20", "src/main.rs"]);
+
+        assert_eq!(
+            canonicalize_rtk_fallback_args(&args),
+            Some(fallback_args(&[
+                "read",
+                "--line-range",
+                "1:20",
+                "src/main.rs"
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_head_n_count() {
+        let args = fallback_args(&["head", "-n", "20", "src/main.rs"]);
+
+        assert_eq!(
+            canonicalize_rtk_fallback_args(&args),
+            Some(fallback_args(&[
+                "read",
+                "--line-range",
+                "1:20",
+                "src/main.rs"
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_head_lines_count() {
+        let args = fallback_args(&["head", "--lines=20", "src/main.rs"]);
+
+        assert_eq!(
+            canonicalize_rtk_fallback_args(&args),
+            Some(fallback_args(&[
+                "read",
+                "--line-range",
+                "1:20",
+                "src/main.rs"
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_tail_short_count() {
+        let args = fallback_args(&["tail", "-20", "src/main.rs"]);
+
+        assert_eq!(
+            canonicalize_rtk_fallback_args(&args),
+            Some(fallback_args(&[
+                "read",
+                "--tail-lines",
+                "20",
+                "src/main.rs"
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_tail_n_count() {
+        let args = fallback_args(&["tail", "-n", "20", "src/main.rs"]);
+
+        assert_eq!(
+            canonicalize_rtk_fallback_args(&args),
+            Some(fallback_args(&[
+                "read",
+                "--tail-lines",
+                "20",
+                "src/main.rs"
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_tail_lines_count() {
+        let args = fallback_args(&["tail", "--lines=20", "src/main.rs"]);
+
+        assert_eq!(
+            canonicalize_rtk_fallback_args(&args),
+            Some(fallback_args(&[
+                "read",
+                "--tail-lines",
+                "20",
+                "src/main.rs"
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_rejects_multifile_forms() {
+        for args in [
+            fallback_args(&["cat", "src/main.rs", "src/lib.rs"]),
+            fallback_args(&["head", "-20", "src/main.rs", "src/lib.rs"]),
+            fallback_args(&["tail", "-n", "20", "src/main.rs", "src/lib.rs"]),
+        ] {
+            assert_eq!(canonicalize_rtk_fallback_args(&args), None);
+        }
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_rejects_malformed_counts() {
+        for args in [
+            fallback_args(&["head", "-n", "many", "src/main.rs"]),
+            fallback_args(&["head", "-n", "+20", "src/main.rs"]),
+            fallback_args(&["tail", "-n", "-20", "src/main.rs"]),
+            fallback_args(&["tail", "--lines=", "src/main.rs"]),
+            fallback_args(&["head", "--lines", "20", "src/main.rs"]),
+        ] {
+            assert_eq!(canonicalize_rtk_fallback_args(&args), None);
+        }
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_rejects_incompatible_flags() {
+        for args in [
+            fallback_args(&["cat", "-n", "src/main.rs"]),
+            fallback_args(&["head", "-c", "20", "src/main.rs"]),
+            fallback_args(&["tail", "--bytes=20", "src/main.rs"]),
+            fallback_args(&["head", "-20", "-"]),
+        ] {
+            assert_eq!(canonicalize_rtk_fallback_args(&args), None);
+        }
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_rejects_redirection_like_arguments() {
+        for args in [
+            fallback_args(&["rg", "needle", "2>&1"]),
+            fallback_args(&["cat", ">output"]),
+            fallback_args(&["head", "-20", "2>output"]),
+        ] {
+            assert_eq!(canonicalize_rtk_fallback_args(&args), None);
+        }
+    }
+
+    #[test]
+    fn test_canonicalize_fallback_rejects_unsupported_forms() {
+        for args in [
+            fallback_args(&["head", "src/main.rs"]),
+            fallback_args(&["tail", "src/main.rs"]),
+            fallback_args(&["sed", "-n", "1,10p", "src/main.rs"]),
+        ] {
+            assert_eq!(canonicalize_rtk_fallback_args(&args), None);
+        }
+    }
+
     // --- P0.2: head -N rewrite ---
 
     #[test]
     fn test_rewrite_head_numeric_flag() {
-        // head -20 file → rtk read file --max-lines 20 (not rtk read -20 file)
+        // Preserve head's exact source lines with a range, not smart truncation.
         assert_eq!(
             rewrite_command_no_prefixes("head -20 src/main.rs", &[]),
-            Some("rtk read src/main.rs --max-lines 20".into())
+            Some("rtk read --line-range 1:20 src/main.rs".into())
         );
     }
 
@@ -1788,7 +2122,7 @@ mod tests {
     fn test_rewrite_head_lines_long_flag() {
         assert_eq!(
             rewrite_command_no_prefixes("head --lines=50 src/lib.rs", &[]),
-            Some("rtk read src/lib.rs --max-lines 50".into())
+            Some("rtk read --line-range 1:50 src/lib.rs".into())
         );
     }
 

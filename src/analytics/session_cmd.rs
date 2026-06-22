@@ -1,7 +1,9 @@
 //! Compares RTK-routed vs raw commands in a coding session.
 
+// Rust guideline compliant 2026-02-21
+
 use crate::core::utils::format_tokens;
-use crate::discover::provider::{ClaudeProvider, ExtractedCommand, SessionProvider};
+use crate::discover::provider::{ExtractedCommand, SessionProvider};
 use crate::discover::registry::{classify_command, split_command_chain, Classification};
 use anyhow::{Context, Result};
 use std::fs;
@@ -56,15 +58,20 @@ fn progress_bar(pct: f64, width: usize) -> String {
     format!("{}{}", "@".repeat(filled), ".".repeat(empty))
 }
 
-pub fn run(_verbose: u8) -> Result<()> {
-    let provider = ClaudeProvider;
+pub fn run(_verbose: u8, provider: &dyn SessionProvider) -> Result<()> {
     let sessions = provider
         .discover_sessions(None, Some(30))
-        .context("Failed to discover Claude Code sessions")?;
+        .with_context(|| format!("Failed to discover {} sessions", provider.display_name()))?;
 
     if sessions.is_empty() {
-        println!("No Claude Code sessions found in the last 30 days.");
-        println!("Make sure Claude Code has been used at least once.");
+        println!(
+            "No {} sessions found in the last 30 days.",
+            provider.display_name()
+        );
+        println!(
+            "Make sure {} has been used at least once.",
+            provider.display_name()
+        );
         return Ok(());
     }
 
@@ -191,7 +198,7 @@ pub fn run(_verbose: u8) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::discover::provider::ExtractedCommand;
+    use crate::discover::provider::{ClaudeProvider, ExtractedCommand};
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -203,6 +210,7 @@ mod tests {
             output_content: None,
             is_error: false,
             sequence_index: 0,
+            hide_arguments_in_reports: false,
         }
     }
 

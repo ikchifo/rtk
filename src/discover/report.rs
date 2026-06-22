@@ -95,6 +95,8 @@ impl AgentIntegrationStatus {
 /// Full discover report.
 #[derive(Debug, Serialize)]
 pub struct DiscoverReport {
+    /// Coding-agent transcript source used to build this report.
+    pub session_source: String,
     pub sessions_scanned: usize,
     pub total_commands: usize,
     pub already_rtk: usize,
@@ -143,7 +145,7 @@ pub fn format_text(report: &DiscoverReport, limit: usize, verbose: bool) -> Stri
 
     if report.supported.is_empty() && report.unsupported.is_empty() {
         out.push_str("\nNo missed savings found. RTK usage looks good!\n");
-        append_agent_notes(&mut out, report.agent_status);
+        append_agent_notes(&mut out, report.agent_status, &report.session_source);
         return out;
     }
 
@@ -218,7 +220,7 @@ pub fn format_text(report: &DiscoverReport, limit: usize, verbose: bool) -> Stri
 
     out.push_str("\n~estimated from tool_result output sizes\n");
 
-    append_agent_notes(&mut out, report.agent_status);
+    append_agent_notes(&mut out, report.agent_status, &report.session_source);
 
     if verbose && report.parse_errors > 0 {
         out.push_str(&format!("Parse errors skipped: {}\n", report.parse_errors));
@@ -227,17 +229,23 @@ pub fn format_text(report: &DiscoverReport, limit: usize, verbose: bool) -> Stri
     out
 }
 
-fn append_agent_notes(out: &mut String, status: AgentIntegrationStatus) {
+fn append_agent_notes(out: &mut String, status: AgentIntegrationStatus, session_source: &str) {
     if status.cursor_hook_installed {
-        out.push_str("\nNote: Cursor sessions are tracked via `rtk gain` (discover scans Claude Code only)\n");
+        out.push_str(&format!(
+            "\nNote: Cursor sessions are tracked via `rtk gain` (discover scans {session_source} sessions)\n"
+        ));
     }
 
     if status.hermes_plugin_installed {
-        out.push_str("\nNote: Hermes plugin is installed; Hermes sessions are tracked via `rtk gain` (discover scans Claude Code only)\n");
+        out.push_str(&format!(
+            "\nNote: Hermes plugin is installed; Hermes sessions are tracked via `rtk gain` (discover scans {session_source} sessions)\n"
+        ));
     }
 
     if status.copilot_hook_installed {
-        out.push_str("\nNote: GitHub Copilot sessions are tracked via `rtk gain` (discover scans Claude Code only)\n");
+        out.push_str(&format!(
+            "\nNote: GitHub Copilot sessions are tracked via `rtk gain` (discover scans {session_source} sessions)\n"
+        ));
     }
 }
 
@@ -276,6 +284,7 @@ mod tests {
 
     fn make_report(total_commands: usize, already_rtk: usize) -> DiscoverReport {
         DiscoverReport {
+            session_source: "Claude Code".to_string(),
             sessions_scanned: 1,
             total_commands,
             already_rtk,
@@ -377,6 +386,7 @@ mod tests {
     #[test]
     fn test_format_json_includes_agent_status() {
         let mut report = make_report(0, 0);
+        report.session_source = "Codex".to_string();
         report.agent_status = AgentIntegrationStatus {
             cursor_hook_installed: true,
             hermes_plugin_installed: true,
@@ -389,6 +399,7 @@ mod tests {
         assert_eq!(json["agent_status"]["cursor_hook_installed"], true);
         assert_eq!(json["agent_status"]["hermes_plugin_installed"], true);
         assert_eq!(json["agent_status"]["copilot_hook_installed"], true);
+        assert_eq!(json["session_source"], "Codex");
     }
 
     #[test]
@@ -425,5 +436,20 @@ mod tests {
             "Expected Copilot note in output but got:\n{}",
             output
         );
+    }
+
+    #[test]
+    fn test_agent_notes_name_selected_transcript_source() {
+        let mut report = make_report(0, 0);
+        report.session_source = "Codex".to_string();
+        report.agent_status = AgentIntegrationStatus {
+            copilot_hook_installed: true,
+            ..AgentIntegrationStatus::default()
+        };
+
+        let output = format_text(&report, 10, false);
+
+        assert!(output.contains("discover scans Codex sessions"));
+        assert!(!output.contains("discover scans Claude Code only"));
     }
 }

@@ -133,6 +133,31 @@ pub struct LimitsConfig {
     pub passthrough_max_chars: usize,
 }
 
+/// Bounds the initial Codex source-read page at 120 lines.
+///
+/// This gives a useful amount of local source context while requiring an
+/// explicit range, tail, or larger maximum for large files. It is only used by
+/// the opt-in Codex profile; normal `rtk read` behavior remains unbounded.
+pub const CODEX_READ_MAX_LINES: usize = 120;
+
+/// Caps Codex grep output at 60 matches across all files.
+///
+/// The lower total keeps broad searches inspectable and leaves room for the
+/// calling agent to refine a query. It is only used by the opt-in Codex
+/// profile; normal grep defaults remain unchanged.
+pub const CODEX_GREP_MAX_RESULTS: usize = 60;
+
+/// Caps Codex grep output at 10 matches from each file.
+///
+/// Limiting a dominant file preserves search-result diversity within the total
+/// Codex grep budget. It is only used by the opt-in Codex profile.
+pub const CODEX_GREP_MAX_PER_FILE: usize = 10;
+
+/// Returns the paired grep limits for the opt-in Codex profile.
+pub fn codex_grep_limits() -> (usize, usize) {
+    (CODEX_GREP_MAX_RESULTS, CODEX_GREP_MAX_PER_FILE)
+}
+
 impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
@@ -295,5 +320,16 @@ consent_date = "2026-04-10T12:00:00Z"
             config.telemetry.consent_date.as_deref(),
             Some("2026-04-10T12:00:00Z")
         );
+    }
+
+    #[test]
+    fn test_codex_budgets_are_opt_in_and_more_bounded_than_defaults() {
+        let defaults = LimitsConfig::default();
+        let (grep_max_results, grep_max_per_file) = codex_grep_limits();
+
+        assert_eq!(defaults.grep_max_results, 200);
+        assert_eq!(defaults.grep_max_per_file, 25);
+        assert!(grep_max_results < defaults.grep_max_results);
+        assert!(grep_max_per_file < defaults.grep_max_per_file);
     }
 }
