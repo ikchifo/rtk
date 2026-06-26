@@ -279,9 +279,8 @@ impl Engine {
         self.bin()
     }
 
-    /// Parse aids only: line numbers + always-shown filename, NUL-separated so the
-    /// regroup is unambiguous (#1436), binary noise skipped. None of these change
-    /// which lines match.
+    /// `-n -H --null` are parse aids (NUL keeps the regroup unambiguous, #1436);
+    /// `-I` skips binary noise (-a overrides).
     fn parse_flags(self) -> &'static [&'static str] {
         match self {
             Engine::Grep => &["-n", "-H", "-I", "--null"],

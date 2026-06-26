@@ -1,6 +1,7 @@
 #![cfg(unix)]
-//! Integration tests for the GROUP path with context flags (-A/-B/-C) and the
-//! safety-net passthrough for flags that break the NUL-based reparse.
+//! Integration tests for the shared grep/rg compression filter: the GROUP path
+//! with context flags (-A/-B/-C) and the safety-net passthrough for flags (some
+//! grep-only like -I, some rg-only like --heading/-p) that break the NUL reparse.
 
 use std::process::Command;
 
@@ -345,5 +346,33 @@ fn bundled_files_with_matches_cluster_lists_files() {
     assert!(
         !stdout.contains("c.txt"),
         "-rln must not list non-matching files:\n{stdout}"
+    );
+}
+
+// A match inside a binary file is noise (grep prints only a "binary file matches"
+// notice); skip it by default, but `-a` lets the agent opt back into the content.
+#[test]
+fn binary_match_is_skipped_unless_text_requested() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let p = dir.path().join("blob.bin");
+    std::fs::write(&p, b"SECRET\x00\x01binary\xff\xfe").expect("write");
+    let path = p.to_str().unwrap();
+
+    let out = rtk().args(["grep", "SECRET", path]).output().expect("rtk");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "binary match must be skipped as noise by default"
+    );
+    assert!(out.stdout.is_empty(), "no binary content by default");
+
+    let out = rtk()
+        .args(["grep", "-a", "SECRET", path])
+        .output()
+        .expect("rtk -a");
+    assert_eq!(out.status.code(), Some(0), "-a must surface the match");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("SECRET"),
+        "-a must show the binary content"
     );
 }
