@@ -120,7 +120,7 @@ fn no_line_number_flag_produces_output_not_zero_matches() {
     }
     let (_dir, path) = write_temp("hello world\n");
     let out = rtk()
-        .args(["grep", "-N", "hello", path.to_str().unwrap()])
+        .args(["rg", "-N", "hello", path.to_str().unwrap()])
         .output()
         .expect("rtk grep");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -164,7 +164,7 @@ fn heading_flag_produces_output_not_zero_matches() {
     }
     let (_dir, path) = write_temp("hello world\n");
     let out = rtk()
-        .args(["grep", "--heading", "hello", path.to_str().unwrap()])
+        .args(["rg", "--heading", "hello", path.to_str().unwrap()])
         .output()
         .expect("rtk grep");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -186,7 +186,7 @@ fn pretty_flag_produces_output_not_zero_matches() {
     }
     let (_dir, path) = write_temp("hello world\n");
     let out = rtk()
-        .args(["grep", "-p", "hello", path.to_str().unwrap()])
+        .args(["rg", "-p", "hello", path.to_str().unwrap()])
         .output()
         .expect("rtk grep");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -210,7 +210,7 @@ fn column_flag_output_has_no_nul() {
     }
     let (_dir, path) = write_temp("hello world\n");
     let out = rtk()
-        .args(["grep", "--column", "hello", path.to_str().unwrap()])
+        .args(["rg", "--column", "hello", path.to_str().unwrap()])
         .output()
         .expect("rtk grep");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -231,6 +231,7 @@ fn count_tokens(s: &str) -> usize {
     s.split_whitespace().count()
 }
 
+// Covers #545: grep savings are measured against the real grep output.
 #[test]
 fn bulky_grep_yields_token_savings() {
     if !rg_available() {
