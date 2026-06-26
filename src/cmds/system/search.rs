@@ -6,7 +6,7 @@
 //! used (see `Engine`); the compression is identical because both emit the same
 //! `file:line:content` shape.
 
-use crate::core::stream::{exec_capture, CaptureResult};
+use crate::core::stream::{exec_capture, exec_capture_stdin, CaptureResult};
 use crate::core::tracking;
 use crate::core::utils::{resolved_command, strip_ansi};
 use crate::core::{args_utils, config};
@@ -308,38 +308,22 @@ fn engine_capture<T: AsRef<str>>(
     }
     cmd.arg("--");
     cmd.args(paths);
-    exec_capture(&mut cmd).context("search failed")
+    exec_capture_stdin(&mut cmd).context("search failed")
 }
 
-/// Runs the engine with no injected flags at all (already-minimal output forms).
-fn engine_raw<T: AsRef<str>>(
-    engine: Engine,
-    extra_args: &[T],
-    patterns: &[String],
-    paths: &[String],
-) -> Result<CaptureResult> {
-    let mut cmd = resolved_command(engine.bin());
-    for a in extra_args {
-        cmd.arg(a.as_ref());
-    }
-    for p in patterns {
-        cmd.args(["-e", p]);
-    }
-    cmd.arg("--");
-    cmd.args(paths);
-    exec_capture(&mut cmd).context("search failed")
-}
-
-#[allow(clippy::too_many_arguments)]
+/// Runs the agent's command verbatim for forms RTK does not group: format/shape
+/// flags and pattern-less modes (`--files`, `--type-list`).
 fn passthrough<T: AsRef<str>>(
     timer: &tracking::TimedExecution,
     engine: Engine,
-    extra_args: &[T],
-    patterns: &[String],
-    paths: &[String],
+    args: &[T],
     real_cmd: &str,
 ) -> Result<i32> {
-    let result = engine_raw(engine, extra_args, patterns, paths)?;
+    let mut cmd = resolved_command(engine.bin());
+    for a in args {
+        cmd.arg(a.as_ref());
+    }
+    let result = exec_capture_stdin(&mut cmd).context("search failed")?;
 
     print!("{}", strip_ansi(&result.stdout));
     if !result.stderr.is_empty() {
@@ -348,6 +332,12 @@ fn passthrough<T: AsRef<str>>(
 
     timer.track_passthrough(real_cmd, &format!("rtk {} (passthrough)", real_cmd));
     Ok(result.exit_code)
+}
+
+fn has_short_flag(flags: &[String], ch: char) -> bool {
+    flags
+        .iter()
+        .any(|f| f.starts_with('-') && !f.starts_with("--") && f[1..].contains(ch))
 }
 
 pub fn run(
@@ -385,8 +375,7 @@ pub fn run(
     let (patterns, paths, extra_args) = extract_pattern_path(&args);
 
     if patterns.is_empty() {
-        eprintln!("rtk grep: pattern required (positional or -e)");
-        return Ok(1);
+        return passthrough(&timer, engine, &args, &real_cmd);
     }
 
     let pattern_display = if patterns.len() == 1 {
@@ -395,11 +384,6 @@ pub fn run(
         patterns.join("|")
     };
 
-    let paths = if paths.is_empty() {
-        vec![".".to_string()]
-    } else {
-        paths
-    };
     let path_display = paths.join(" ");
 
     if verbose > 0 {
@@ -408,7 +392,7 @@ pub fn run(
 
     // format/shape flags (-c/-l/-o/...): already-minimal native output, passthrough.
     if has_format_flag(&extra_args) {
-        return passthrough(&timer, engine, &extra_args, &patterns, &paths, &real_cmd);
+        return passthrough(&timer, engine, &args, &real_cmd);
     }
 
     let result = engine_capture(engine, &extra_args, &patterns, &paths)?;
@@ -435,7 +419,7 @@ pub fn run(
     // Safety net: unparseable shape → passthrough verbatim, never silently drop (#2333).
     let signal = unparsed_signal(&raw_output);
     if signal > 0 {
-        return passthrough(&timer, engine, &extra_args, &patterns, &paths, &real_cmd);
+        return passthrough(&timer, engine, &args, &real_cmd);
     }
 
     let context_re = if context_only {
@@ -466,18 +450,49 @@ pub fn run(
         .filter(|(_, is_match, _)| *is_match)
         .count();
 
-    let mut rtk_output = String::new();
-    rtk_output.push_str(&format!(
-        "{} matches in {} files:\n\n",
-        total_matches,
-        by_file.len()
-    ));
+    // Mirror what the real command prints: the filename only when grep/rg would
+    // show one (multiple files, a directory, -r or -H), the line number only with
+    // -n. We force -nH--null for robust parsing, then drop what the engine itself
+    // would not have shown.
+    let show_file = by_file.len() > 1
+        || paths.len() > 1
+        || paths.iter().any(|p| std::path::Path::new(p).is_dir())
+        || has_short_flag(&extra_args, 'H')
+        || has_short_flag(&extra_args, 'r')
+        || has_short_flag(&extra_args, 'R')
+        || extra_args
+            .iter()
+            .any(|f| f == "--with-filename" || f == "--recursive");
+    // Always surface the line number (the openable position) unless the agent
+    // explicitly turned it off; the filename is the only conditional part.
+    let show_line = !has_short_flag(&extra_args, 'N')
+        && !extra_args.iter().any(|f| f == "--no-line-number");
 
-    let mut shown = 0;
+    // Faithful baseline: exactly what the real command prints, full content.
+    let mut plain = String::new();
+    for line in raw_output.lines() {
+        let Some((file, line_num, is_match, content)) = parse_match_line(line) else {
+            continue;
+        };
+        let sep = if is_match { ':' } else { '-' };
+        if show_file {
+            plain.push_str(&file);
+            plain.push(sep);
+        }
+        if show_line {
+            plain.push_str(&line_num.to_string());
+            plain.push(sep);
+        }
+        plain.push_str(content);
+        plain.push('\n');
+    }
+
+    let per_file = config::limits().grep_max_per_file;
     let mut files: Vec<_> = by_file.iter().collect();
     files.sort_by_key(|(f, _)| *f);
 
-    let per_file = config::limits().grep_max_per_file;
+    let mut body = String::new();
+    let mut shown = 0;
     let mut skipped_files = 0;
     let mut skipped_block = String::new();
     for (idx, (file, entries)) in files.into_iter().enumerate() {
@@ -494,10 +509,16 @@ pub fn run(
                 break;
             }
             let sep = if *is_match { ':' } else { '-' };
-            rtk_output.push_str(&format!(
-                "{}{}{}{}{}\n",
-                file_display, sep, line_num, sep, content
-            ));
+            if show_file {
+                body.push_str(&file_display);
+                body.push(sep);
+            }
+            if show_line {
+                body.push_str(&line_num.to_string());
+                body.push(sep);
+            }
+            body.push_str(content);
+            body.push('\n');
             shown += 1;
             file_shown += 1;
         }
@@ -512,22 +533,34 @@ pub fn run(
         match crate::core::tee::force_tee_tail_hint(&full_block, &grep_slug(idx, file), file_shown + 1)
         {
             Some(hint) => {
-                rtk_output.push_str(&format!("  +{} more in {} — {}\n", remaining, file_display, hint))
+                body.push_str(&format!("  +{} more in {} {}\n", remaining, file_display, hint))
             }
-            None => rtk_output.push_str(&format!("  +{} more in {}\n", remaining, file_display)),
+            None => body.push_str(&format!("  +{} more in {}\n", remaining, file_display)),
         }
     }
 
     if skipped_files > 0 {
         let hint = crate::core::tee::force_tee_tail_hint(&skipped_block, "grep_skipped", 1)
-            .map(|h| format!(" — {}", h))
+            .map(|h| format!(" {}", h))
             .unwrap_or_default();
-        rtk_output.push_str(&format!("+{} more files{}\n", skipped_files, hint));
+        body.push_str(&format!("+{} more files{}\n", skipped_files, hint));
     }
 
-    // Never-worse: show plain `file:line:content` (NUL `-0` -> `:`) if grouping didn't shrink it.
-    let plain = raw_output.replace('\0', ":");
-    let output = if rtk_output.len() < plain.len() {
+    // Switch to the grouped form only when capping actually shrank the output;
+    // otherwise emit the faithful baseline, so RTK never exceeds the real command.
+    let capped = shown < total_matches || skipped_files > 0;
+    let rtk_output = if capped {
+        format!(
+            "{} matches in {} files:\n\n{}",
+            total_matches,
+            by_file.len(),
+            body
+        )
+    } else {
+        body
+    };
+
+    let output = if capped && rtk_output.len() < plain.len() {
         rtk_output
     } else {
         plain

@@ -3,10 +3,33 @@
 //! with its own regex dialect and ignore semantics. rtk filters output noise only;
 //! it never substitutes one engine for the other (the bug this PR removes).
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 fn rtk() -> Command {
     Command::new(env!("CARGO_BIN_EXE_rtk"))
+}
+
+/// Run rtk with `input` fed on stdin; returns (stdout, exit_code).
+fn rtk_stdin(input: &str, args: &[&str]) -> (String, Option<i32>) {
+    let mut child = rtk()
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn rtk");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.as_bytes())
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.status.code(),
+    )
 }
 
 fn rg_available() -> bool {
@@ -117,7 +140,7 @@ fn bulky_rg_yields_token_savings() {
     }
     let filler: String = (0..50).map(|i| format!("word{i} ")).collect();
     let mut content = String::new();
-    for i in 0..20 {
+    for i in 0..60 {
         content.push_str(&format!("MATCH line {i} {filler}\n"));
     }
     let (_dir, path) = write_temp(&content);
@@ -198,5 +221,109 @@ fn rg_glob_flag_filters_the_file_set() {
     assert!(
         !stdout.contains("b.txt"),
         "rg -g '*.rs' must exclude files outside the glob:\n{stdout}"
+    );
+}
+
+// --- piped stdin: read the pipe, never inject a path ---
+
+#[test]
+fn grep_reads_piped_stdin() {
+    let (out, code) = rtk_stdin("alpha\nmatch me here\nomega\n", &["grep", "match"]);
+    assert_eq!(
+        code,
+        Some(0),
+        "stdin match must exit 0, got {code:?}:\n{out}"
+    );
+    assert!(
+        out.contains("match me here"),
+        "grep must read stdin and emit the match:\n{out}"
+    );
+    assert!(
+        !out.contains("Is a directory"),
+        "RTK must not inject '.' and break a stdin pipe:\n{out}"
+    );
+}
+
+#[test]
+fn rg_reads_piped_stdin_without_flooding_cwd() {
+    if !rg_available() {
+        return;
+    }
+    // `fn` matches thousands of repo lines; reading stdin must yield only the pipe.
+    let (out, code) = rtk_stdin("fn stdin_only_line\n", &["rg", "fn"]);
+    assert_eq!(
+        code,
+        Some(0),
+        "stdin match must exit 0, got {code:?}:\n{out}"
+    );
+    assert!(
+        out.contains("stdin_only_line"),
+        "rg must read stdin and emit the match:\n{out}"
+    );
+    assert!(
+        !out.contains(".rs:") && !out.contains("src/"),
+        "rg must read stdin, not flood the working tree:\n{out}"
+    );
+}
+
+#[test]
+fn grep_counts_piped_stdin_via_passthrough() {
+    // `-c` routes to the passthrough path; it must still read the pipe, not null stdin.
+    let (out, code) = rtk_stdin("hit\nmiss\nhit\n", &["grep", "-c", "hit"]);
+    assert_eq!(
+        code,
+        Some(0),
+        "stdin count must exit 0, got {code:?}:\n{out}"
+    );
+    assert_eq!(
+        out.trim(),
+        "2",
+        "grep -c must count matches from stdin:\n{out}"
+    );
+}
+
+// --- pattern-less commands run instead of being blocked ---
+
+#[test]
+fn rg_type_list_passes_through() {
+    if !rg_available() {
+        return;
+    }
+    let out = rtk().args(["rg", "--type-list"]).output().expect("rtk rg");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "--type-list must exit 0");
+    assert!(
+        stdout.lines().count() > 10,
+        "--type-list must produce the real type list:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("pattern required") && !stderr.contains("pattern required"),
+        "valid pattern-less command must not be blocked:\n{stdout}{stderr}"
+    );
+    assert!(
+        !stderr.contains("rtk grep:"),
+        "an rg command must never be labelled 'rtk grep:':\n{stderr}"
+    );
+}
+
+#[test]
+fn rg_files_lists_the_given_dir() {
+    if !rg_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("only_here.txt"), "x\n").expect("write");
+    let path = dir.path().to_str().unwrap();
+
+    let out = rtk()
+        .args(["rg", "--files", path])
+        .output()
+        .expect("rtk rg");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "--files must exit 0");
+    assert!(
+        stdout.contains("only_here.txt"),
+        "--files must list the given dir, not the cwd:\n{stdout}"
     );
 }

@@ -26,7 +26,7 @@ fn write_temp(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
 // --- context compression (the gain win) ---
 
 #[test]
-fn after_context_yields_grouped_header_with_correct_match_count() {
+fn single_file_context_shown_without_header() {
     if !rg_available() {
         return;
     }
@@ -41,16 +41,12 @@ fn after_context_yields_grouped_header_with_correct_match_count() {
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     assert!(
-        stdout.contains("1 matches"),
-        "header must count only the match line, not context lines:\n{stdout}"
+        !stdout.contains("matches in"),
+        "single-file search must not add a grouped header:\n{stdout}"
     );
     assert!(
-        stdout.contains("after1"),
-        "after-context line 1 missing:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("after2"),
-        "after-context line 2 missing:\n{stdout}"
+        stdout.contains("after1") && stdout.contains("after2"),
+        "after-context lines must be shown:\n{stdout}"
     );
 }
 
@@ -61,7 +57,7 @@ fn after_context_uses_dash_separator_for_context_lines() {
     }
     let (_dir, path) = write_temp("MATCH\nafter1\n");
     let out = rtk()
-        .args(["grep", "-A1", "MATCH", path.to_str().unwrap()])
+        .args(["grep", "-nA1", "MATCH", path.to_str().unwrap()])
         .output()
         .expect("rtk grep");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -74,12 +70,12 @@ fn after_context_uses_dash_separator_for_context_lines() {
 }
 
 #[test]
-fn plain_grep_still_shows_grouped_header() {
+fn capped_single_file_shows_header() {
     if !rg_available() {
         return;
     }
-    let long = "x".repeat(120);
-    let content = format!("foo {long}\nbaz\nfoo {long}\n");
+    let filler: String = (0..40).map(|i| format!("w{i} ")).collect();
+    let content: String = (0..60).map(|i| format!("foo {i} {filler}\n")).collect();
     let (_dir, path) = write_temp(&content);
     let out = rtk()
         .args(["grep", "foo", path.to_str().unwrap()])
@@ -89,7 +85,7 @@ fn plain_grep_still_shows_grouped_header() {
 
     assert!(
         stdout.contains("matches in"),
-        "grouped header must show when grouping compresses:\n{stdout}"
+        "header must show once capping compresses:\n{stdout}"
     );
 }
 
@@ -239,7 +235,7 @@ fn bulky_grep_yields_token_savings() {
     }
     let filler: String = (0..50).map(|i| format!("word{i} ")).collect();
     let mut content = String::new();
-    for i in 0..20 {
+    for i in 0..60 {
         content.push_str(&format!("MATCH line {i} {filler}\n"));
     }
     let (_dir, path) = write_temp(&content);
@@ -310,8 +306,8 @@ fn small_grep_not_worse_than_plain() {
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     assert!(
-        stdout.contains(":1:foo"),
-        "should show the match:\n{stdout}"
+        stdout.trim() == "1:foo",
+        "single-file grep must equal `grep -n` (position, no filename):\n{stdout}"
     );
     assert!(
         !stdout.contains("matches in"),
