@@ -256,16 +256,14 @@ pub fn run_test(command: &Commands, args: &[String], verbose: u8) -> Result<i32>
     );
     let tee_label = format!("{}_run", framework);
 
-    println!(
-        "{}",
-        render_test_output(&filtered, &combined, &tee_label, result.exit_code)
-    );
+    let rendered = render_test_output(&filtered, &combined, &tee_label, result.exit_code);
+    let shown = crate::core::runner::emit_guarded(&rendered, None, &combined);
 
     timer.track(
         format!("{} run", framework).as_str(),
         format!("rtk {} run", framework).as_str(),
         &combined,
-        &filtered.text,
+        &shown,
     );
 
     if !result.success() {

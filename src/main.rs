@@ -20,8 +20,8 @@ use cmds::python::{mypy_cmd, pip_cmd, pytest_cmd, ruff_cmd, uv_cmd};
 use cmds::ruby::{rake_cmd, rspec_cmd, rubocop_cmd};
 use cmds::rust::{cargo_cmd, runner};
 use cmds::system::{
-    deps, env_cmd, find_cmd, format_cmd, grep_cmd, jq_cmd, json_cmd, local_llm, log_cmd, ls,
-    pipe_cmd, read, summary, tree, wc_cmd,
+    deps, env_cmd, find_cmd, format_cmd, jq_cmd, json_cmd, local_llm, log_cmd, ls, pipe_cmd, read,
+    search, summary, tree, wc_cmd,
 };
 use discover::provider::TranscriptProvider;
 
@@ -280,14 +280,11 @@ enum Commands {
         path: PathBuf,
     },
 
-    /// Show environment variables (filtered, sensitive masked)
+    /// Show environment variables (filtered)
     Env {
         /// Filter by name (e.g. PATH, AWS)
         #[arg(short, long)]
         filter: Option<String>,
-        /// Show all (include sensitive)
-        #[arg(long)]
-        show_all: bool,
     },
 
     /// Find files with compact tree output (accepts native find flags like -name, -type)
@@ -357,6 +354,13 @@ enum Commands {
         #[arg(short = 't', long)]
         file_type: Option<String>,
         /// Pattern, path, and any grep/rg flags (e.g. -v, -i, -A 3, --glob, --version)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        extra_args: Vec<String>,
+    },
+
+    /// Compact ripgrep - runs rg natively, same output filter as grep
+    Rg {
+        /// Pattern, path, and any rg flags (e.g. -v, -i, -t rust, --glob)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         extra_args: Vec<String>,
     },
@@ -1334,16 +1338,14 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
                 };
 
                 let filtered = core::toml_filter::apply_filter(filter, &combined_raw);
-                println!("{}", filtered);
-                if let Some(hint) = tee_hint {
-                    println!("{}", hint);
-                }
+                let shown =
+                    core::runner::emit_guarded(&filtered, tee_hint.as_deref(), &combined_raw);
 
                 timer.track(
                     &raw_command,
                     &format!("rtk:toml {}", raw_command),
                     &combined_raw,
-                    &filtered,
+                    &shown,
                 );
                 core::tracking::record_parse_failure_silent(&raw_command, &error_message, true);
 
@@ -1865,8 +1867,8 @@ fn run_cli() -> Result<i32> {
             0
         }
 
-        Commands::Env { filter, show_all } => {
-            env_cmd::run(filter.as_deref(), show_all, cli.verbose)?;
+        Commands::Env { filter } => {
+            env_cmd::run(filter.as_deref(), cli.verbose)?;
             0
         }
 
@@ -1978,14 +1980,32 @@ fn run_cli() -> Result<i32> {
             extra_args,
         } => {
             let (max_results, max_per_file) = effective_grep_limits(cli.profile, max);
-            grep_cmd::run(
-                max_len,
-                max_results,
-                max_per_file,
-                context_only,
-                file_type.as_deref(),
+            search::run(
+                search::SearchOptions {
+                    engine: search::Engine::Grep,
+                    max_line_len: max_len,
+                    max_results,
+                    max_per_file,
+                    context_only,
+                    file_type: file_type.as_deref(),
+                    verbose: cli.verbose,
+                },
                 &extra_args,
-                cli.verbose,
+            )?
+        }
+        Commands::Rg { extra_args } => {
+            let (max_results, max_per_file) = effective_grep_limits(cli.profile, None);
+            search::run(
+                search::SearchOptions {
+                    engine: search::Engine::Rg,
+                    max_line_len: 80,
+                    max_results,
+                    max_per_file,
+                    context_only: false,
+                    file_type: None,
+                    verbose: cli.verbose,
+                },
+                &extra_args,
             )?
         }
 
@@ -2457,7 +2477,7 @@ fn run_cli() -> Result<i32> {
                     .arg(&raw)
                     .status()
                     .with_context(|| format!("Failed to execute: {}", raw))?;
-                status.code().unwrap_or(1)
+                core::utils::exit_code_from_status(&status, "run")
             }
         }
 
@@ -2708,6 +2728,7 @@ fn is_operational_command(cmd: &Commands) -> bool {
             | Commands::Oc { .. }
             | Commands::Summary { .. }
             | Commands::Grep { .. }
+            | Commands::Rg { .. }
             | Commands::Wget { .. }
             | Commands::Vitest { .. }
             | Commands::Prisma { .. }
@@ -3153,6 +3174,7 @@ mod tests {
             "ls",
             "tree",
             "read",
+            "rg",
             "git",
             "gh",
             "glab",

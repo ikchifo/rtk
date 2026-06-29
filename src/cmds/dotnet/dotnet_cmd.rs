@@ -1,6 +1,7 @@
 //! Filters dotnet CLI output — build, test, and format results.
 
 use crate::binlog;
+use crate::core::guard::never_worse;
 use crate::core::stream::exec_capture;
 use crate::core::tracking;
 use crate::core::truncate::{CAP_ERRORS, CAP_LIST, CAP_WARNINGS};
@@ -54,13 +55,14 @@ pub fn run_format(args: &[String], verbose: u8) -> Result<i32> {
     let check_mode = !has_write_mode_override(args);
     let filtered =
         format_report_summary_or_raw(report_path.as_deref(), check_mode, &raw, command_started_at);
-    println!("{}", filtered);
+    let shown = never_worse(&raw, &filtered);
+    println!("{}", shown);
 
     timer.track(
         &format!("dotnet format {}", args.join(" ")),
         &format!("rtk dotnet format {}", args.join(" ")),
         &raw,
-        &filtered,
+        shown,
     );
 
     if cleanup_report_path {
@@ -226,13 +228,14 @@ fn run_dotnet_with_binlog(subcommand: &str, args: &[String], verbose: u8) -> Res
         &filtered,
     );
 
-    println!("{}", output_to_print);
+    let shown = never_worse(&raw, &output_to_print);
+    println!("{}", shown);
 
     timer.track(
         &format!("dotnet {} {}", subcommand, args.join(" ")),
         &format!("rtk dotnet {} {}", subcommand, args.join(" ")),
         &raw,
-        &output_to_print,
+        shown,
     );
 
     cleanup_temp_file(&binlog_path);
