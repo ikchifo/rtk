@@ -350,6 +350,20 @@ fn has_short_flag(flags: &[String], ch: char) -> bool {
         .any(|f| f.starts_with('-') && !f.starts_with("--") && f[1..].contains(ch))
 }
 
+fn has_context_flag(flags: &[String]) -> bool {
+    has_short_flag(flags, 'A')
+        || has_short_flag(flags, 'B')
+        || has_short_flag(flags, 'C')
+        || flags.iter().any(|f| {
+            f == "--after-context"
+                || f == "--before-context"
+                || f == "--context"
+                || f.starts_with("--after-context=")
+                || f.starts_with("--before-context=")
+                || f.starts_with("--context=")
+        })
+}
+
 pub fn run(options: SearchOptions<'_>, args: &[String]) -> Result<i32> {
     let SearchOptions {
         engine,
@@ -380,35 +394,15 @@ pub fn run(options: SearchOptions<'_>, args: &[String]) -> Result<i32> {
     }
 
     // Re-insert `--` when clap's trailing_var_arg consumed it
-    let args = args_utils::restore_double_dash(args);
+    let mut args = args_utils::restore_double_dash(args);
+    if let Some(file_type) = file_type {
+        args.insert(0, "--type".to_string());
+        args.insert(1, file_type.to_string());
+    }
     let real_cmd = format!("{} {}", engine.label(), args.join(" "));
     let rtk_label = format!("rtk {}", engine.label());
 
     let (patterns, paths, extra_args) = extract_pattern_path(&args);
-
-    // --files: list searchable files without pattern matching (rg --files).
-    if extra_args.iter().any(|a| a == "--files") {
-        let mut cmd = resolved_command("rg");
-        cmd.arg("--files");
-        if let Some(ft) = file_type {
-            cmd.arg("--type").arg(ft);
-        }
-        let search_paths = if paths.is_empty() {
-            vec![".".to_string()]
-        } else {
-            paths.clone()
-        };
-        cmd.args(&search_paths);
-        let result = exec_capture(&mut cmd)
-            .context("rg (ripgrep) not found -- install it: https://github.com/BurntSushi/ripgrep#installation")?;
-        print!("{}", result.stdout);
-        let path_display = search_paths.join(" ");
-        timer.track_passthrough(
-            &format!("grep --files {}", path_display),
-            &format!("rtk grep --files {}", path_display),
-        );
-        return Ok(result.exit_code);
-    }
 
     if patterns.is_empty() {
         return passthrough(&timer, engine, &args, &real_cmd);
@@ -501,6 +495,9 @@ pub fn run(options: SearchOptions<'_>, args: &[String]) -> Result<i32> {
     let mut plain = String::new();
     for line in raw_output.lines() {
         let Some((file, line_num, is_match, content)) = parse_match_line(line) else {
+            if line == "--" {
+                plain.push_str("--\n");
+            }
             continue;
         };
         let sep = if is_match { ':' } else { '-' };
@@ -515,6 +512,8 @@ pub fn run(options: SearchOptions<'_>, args: &[String]) -> Result<i32> {
         plain.push_str(content);
         plain.push('\n');
     }
+
+    let has_context = has_context_flag(&extra_args);
 
     let per_file = max_per_file;
     let mut files: Vec<_> = by_file.iter().collect();
@@ -533,10 +532,15 @@ pub fn run(options: SearchOptions<'_>, args: &[String]) -> Result<i32> {
 
         let file_display = compact_path(file);
         let mut file_shown = 0;
+        let mut prev_line: usize = 0;
         for (line_num, is_match, content) in entries.iter().take(per_file) {
             if shown >= max_results {
                 break;
             }
+            if has_context && prev_line > 0 && *line_num > prev_line + 1 {
+                body.push_str("--\n");
+            }
+            prev_line = *line_num;
             let sep = if *is_match { ':' } else { '-' };
             if show_file {
                 body.push_str(&file_display);
@@ -1422,5 +1426,33 @@ mod tests {
     #[test]
     fn test_files_flag_is_format_flag() {
         assert!(has_format_flag(&["--files".to_string()]));
+    }
+
+    // --- has_context_flag ---
+
+    #[test]
+    fn test_has_context_flag_short() {
+        let f = |args: &[&str]| -> bool {
+            has_context_flag(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        };
+        assert!(f(&["-A", "3"]));
+        assert!(f(&["-B", "2"]));
+        assert!(f(&["-C", "1"]));
+        assert!(!f(&["-rn"]));
+        assert!(!f(&["-i", "-w"]));
+    }
+
+    #[test]
+    fn test_has_context_flag_long() {
+        let f = |args: &[&str]| -> bool {
+            has_context_flag(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        };
+        assert!(f(&["--after-context", "3"]));
+        assert!(f(&["--before-context", "2"]));
+        assert!(f(&["--context", "1"]));
+        assert!(f(&["--after-context=3"]));
+        assert!(f(&["--before-context=2"]));
+        assert!(f(&["--context=1"]));
+        assert!(!f(&["--color", "auto"]));
     }
 }

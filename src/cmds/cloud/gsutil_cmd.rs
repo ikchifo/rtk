@@ -504,7 +504,7 @@ mod tests {
         let lines: Vec<String> = (0..30).map(|i| format!("gs://bucket/obj{}", i)).collect();
         let input = lines.join("\n");
         let result = filter_ls_short(&input);
-        assert!(result.contains("... +10 more objects"));
+        assert!(result.contains("… +10 more objects"));
         // First 20 should be present.
         assert!(result.contains("gs://bucket/obj0"));
         assert!(result.contains("gs://bucket/obj19"));
@@ -667,7 +667,7 @@ gs://bucket/file.txt:
         lines.push("204800       gs://bucket".to_string());
         let input = lines.join("\n");
         let result = filter_du(&input);
-        assert!(result.contains("... +5 more directories"));
+        assert!(result.contains("… +5 more directories"));
         assert!(result.contains("gs://bucket/dir0"));
         assert!(result.contains("204800       gs://bucket"));
     }
