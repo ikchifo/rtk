@@ -273,13 +273,12 @@ pub enum Engine {
 }
 
 #[derive(Clone, Copy)]
-pub struct SearchOptions<'a> {
+pub struct SearchOptions {
     pub engine: Engine,
     pub max_line_len: usize,
     pub max_results: usize,
     pub max_per_file: usize,
     pub context_only: bool,
-    pub file_type: Option<&'a str>,
     pub verbose: u8,
 }
 
@@ -409,8 +408,7 @@ fn show_file(paths: &[String], extra_args: &[String]) -> bool {
 }
 
 fn show_line(extra_args: &[String]) -> bool {
-    (has_short_flag(extra_args, 'n')
-        || extra_args.iter().any(|f| f == "--line-number"))
+    (has_short_flag(extra_args, 'n') || extra_args.iter().any(|f| f == "--line-number"))
         && !has_short_flag(extra_args, 'N')
         && !extra_args.iter().any(|f| f == "--no-line-number")
 }
@@ -503,14 +501,13 @@ fn has_context_flag(flags: &[String]) -> bool {
         })
 }
 
-pub fn run(options: SearchOptions<'_>, args: &[String]) -> Result<i32> {
+pub fn run(options: SearchOptions, args: &[String]) -> Result<i32> {
     let SearchOptions {
         engine,
         max_line_len,
         max_results,
         max_per_file,
         context_only,
-        file_type,
         verbose,
     } = options;
     let timer = tracking::TimedExecution::start();
@@ -533,11 +530,7 @@ pub fn run(options: SearchOptions<'_>, args: &[String]) -> Result<i32> {
     }
 
     // Re-insert `--` when clap's trailing_var_arg consumed it
-    let mut args = args_utils::restore_double_dash(args);
-    if let Some(file_type) = file_type {
-        args.insert(0, "--type".to_string());
-        args.insert(1, file_type.to_string());
-    }
+    let args = args_utils::restore_double_dash(args);
     let real_cmd = format!("{} {}", engine.label(), args.join(" "));
     let rtk_label = format!("rtk {}", engine.label());
 

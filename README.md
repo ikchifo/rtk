@@ -191,6 +191,7 @@ rtk jest                        # Jest compact (failures only)
 rtk vitest                      # Vitest compact (failures only)
 rtk playwright test             # E2E results (failures only)
 rtk pytest                      # Python tests (-90%)
+rtk phpt                        # PHP .phpt tests (run-tests.php, -99%)
 rtk go test                     # Go tests (NDJSON, -90%)
 rtk cargo test                  # Cargo tests (-90%)
 rtk rake test                   # Ruby minitest (-90%)
@@ -211,6 +212,7 @@ rtk cargo clippy                # Cargo clippy (-80%)
 rtk ruff check                  # Python linting (JSON, -80%)
 rtk golangci-lint run           # Go linting (JSON, -85%)
 rtk rubocop                     # Ruby linting (JSON, -60%+)
+rtk mvnd verify                 # Maven Daemon (same filters as rtk mvn)
 rtk sbt test                    # ScalaTest output (-90%)
 rtk sbt compile                 # Compilation errors only (-75%)
 rtk sbt run                     # Strip SBT preamble noise
@@ -224,6 +226,17 @@ rtk pip list                    # Python packages (auto-detect uv)
 rtk pip outdated                # Outdated packages
 rtk bundle install              # Ruby gems (strip Using lines)
 rtk prisma generate             # Schema generation (no ASCII art)
+```
+
+### Runtimes
+```bash
+rtk bun install                  # Strip progress and version lines
+rtk bun test                     # Failures only (-90%)
+rtk bun build                    # Errors only when writing to disk, else passthrough
+rtk bunx tsc                     # Smart routing to tsc filter
+rtk deno test                    # Failures only (-90%)
+rtk deno lint                    # Strip download lines + tee recovery
+rtk deno check                   # Strip download lines + tee recovery
 ```
 
 ### AWS
@@ -411,7 +424,7 @@ For per-agent setup details, override controls, and graceful degradation, see th
 
 ```toml
 [hooks]
-exclude_commands = ["curl", "playwright"]  # skip rewrite for these
+exclude_commands = ["curl", "playwright"]  # skip rewrite for these (matches `npx playwright` too)
 
 [tee]
 enabled = true          # save raw output on failure (default: true)
