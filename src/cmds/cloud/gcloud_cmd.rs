@@ -711,15 +711,21 @@ mod tests {
 
         let result = filter_compute_instances_list(json).expect("should parse");
         assert!(!result.truncated);
-        assert!(result
-            .text
-            .contains("vm-1 | us-central1-a | RUNNING | 10.0.0.1"));
-        assert!(result
-            .text
-            .contains("vm-2 | europe-west1-b | TERMINATED | 10.0.0.2"));
-        assert!(result
-            .text
-            .starts_with("NAME | ZONE | STATUS | INTERNAL_IP"));
+        assert!(
+            result
+                .text
+                .contains("vm-1 | us-central1-a | RUNNING | 10.0.0.1")
+        );
+        assert!(
+            result
+                .text
+                .contains("vm-2 | europe-west1-b | TERMINATED | 10.0.0.2")
+        );
+        assert!(
+            result
+                .text
+                .starts_with("NAME | ZONE | STATUS | INTERNAL_IP")
+        );
     }
 
     #[test]
@@ -774,9 +780,11 @@ mod tests {
         ]"#;
 
         let result = filter_container_clusters_list(json).expect("should parse");
-        assert!(result
-            .text
-            .contains("prod-cluster | europe-west4-b | RUNNING | 12"));
+        assert!(
+            result
+                .text
+                .contains("prod-cluster | europe-west4-b | RUNNING | 12")
+        );
     }
 
     #[test]
@@ -796,9 +804,11 @@ mod tests {
         let result = filter_container_clusters_describe(json).expect("should parse");
         assert!(result.text.contains("name: staging"));
         assert!(result.text.contains("nodeCount: 3"));
-        assert!(result
-            .text
-            .contains("nodeConfig: e2-standard-4, 100GB, pd-standard"));
+        assert!(
+            result
+                .text
+                .contains("nodeConfig: e2-standard-4, 100GB, pd-standard")
+        );
     }
 
     #[test]

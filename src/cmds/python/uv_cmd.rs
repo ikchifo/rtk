@@ -1,7 +1,7 @@
 //! Filters `uv` package manager output to strip resolution/download noise.
 
 use crate::core::runner;
-use crate::core::stream::{self, exec_capture, FilterMode, StdinMode};
+use crate::core::stream::{self, FilterMode, StdinMode, exec_capture};
 use crate::core::tracking;
 use crate::core::truncate::{CAP_INVENTORY, CAP_WARNINGS};
 use crate::core::utils::{resolved_command, strip_ansi, truncate};
@@ -95,13 +95,8 @@ fn run_uv_run(args: &[String], verbose: u8) -> Result<(String, String, i32)> {
         &result.raw_stderr,
         result.exit_code,
     );
-    let shown = runner::print_with_hint(
-        &filtered,
-        &result.raw,
-        &result.raw,
-        "uv",
-        result.exit_code,
-    );
+    let shown =
+        runner::print_with_hint(&filtered, &result.raw, &result.raw, "uv", result.exit_code);
 
     Ok((result.raw, shown, result.exit_code))
 }
@@ -161,8 +156,8 @@ fn run_uv_add_remove(
         eprintln!("Running: uv {} {}", subcommand, args.join(" "));
     }
 
-    let result = exec_capture(&mut cmd)
-        .with_context(|| format!("failed to run uv {}", subcommand))?;
+    let result =
+        exec_capture(&mut cmd).with_context(|| format!("failed to run uv {}", subcommand))?;
     let raw = format!("{}\n{}", result.stdout, result.stderr);
 
     let filtered = filter_uv_add_remove(subcommand, &result.stderr);
@@ -253,8 +248,8 @@ fn run_passthrough(args: &[String], verbose: u8) -> Result<(String, String, i32)
         eprintln!("Running: uv {}", args.join(" "));
     }
 
-    let result = exec_capture(&mut cmd)
-        .with_context(|| format!("failed to run uv {}", args.join(" ")))?;
+    let result =
+        exec_capture(&mut cmd).with_context(|| format!("failed to run uv {}", args.join(" ")))?;
     let raw = format!("{}\n{}", result.stdout, result.stderr);
 
     print!("{}", result.stdout);
@@ -298,8 +293,8 @@ fn run_generic(args: &[String], verbose: u8) -> Result<(String, String, i32)> {
         eprintln!("Running: uv {}", args.join(" "));
     }
 
-    let result = exec_capture(&mut cmd)
-        .with_context(|| format!("failed to run uv {}", args.join(" ")))?;
+    let result =
+        exec_capture(&mut cmd).with_context(|| format!("failed to run uv {}", args.join(" ")))?;
     let raw = format!("{}\n{}", result.stdout, result.stderr);
 
     let combined = result.combined();
@@ -441,8 +436,7 @@ fn filter_uv_pip_install(stderr: &str) -> String {
         }
     }
 
-    let time = extract_time(&summary.installed)
-        .or_else(|| extract_time(&summary.resolved));
+    let time = extract_time(&summary.installed).or_else(|| extract_time(&summary.resolved));
 
     let mut result = format!("installed {} packages", top_level.len());
     if let Some(t) = time {
@@ -641,14 +635,15 @@ fn program_output(text: &str, tee_slug: &str) -> String {
         .iter()
         .map(|line| truncate(line, MAX_PROGRAM_LINE_CHARS))
         .collect();
-    let line_was_cut = capped.iter().zip(lines).any(|(cut, full)| cut.len() != full.len());
+    let line_was_cut = capped
+        .iter()
+        .zip(lines)
+        .any(|(cut, full)| cut.len() != full.len());
 
     if capped.len() <= CAP_INVENTORY {
         let out = capped.join("\n");
-        if line_was_cut {
-            if let Some(hint) = crate::core::tee::force_tee_hint(&clean, tee_slug) {
-                return format!("{out}\n{hint}");
-            }
+        if line_was_cut && let Some(hint) = crate::core::tee::force_tee_hint(&clean, tee_slug) {
+            return format!("{out}\n{hint}");
         }
         return out;
     }
@@ -789,7 +784,9 @@ fn is_error_start(line: &str) -> bool {
         return true;
     }
 
-    ERROR_START_PATTERNS.iter().any(|pattern| pattern.is_match(line))
+    ERROR_START_PATTERNS
+        .iter()
+        .any(|pattern| pattern.is_match(line))
 }
 
 fn is_error_continuation(line: &str) -> bool {

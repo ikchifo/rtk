@@ -167,7 +167,9 @@ mod tests {
     #[test]
     fn raw_string_truncation() {
         // 80 plain-text lines, each long enough to exceed threshold.
-        let lines: Vec<String> = (0..80).map(|i| format!("line {} {}", i, "z".repeat(40))).collect();
+        let lines: Vec<String> = (0..80)
+            .map(|i| format!("line {} {}", i, "z".repeat(40)))
+            .collect();
         let input = lines.join("\n");
         assert!(input.len() > PASSTHROUGH_THRESHOLD);
 

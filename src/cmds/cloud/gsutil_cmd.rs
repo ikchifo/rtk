@@ -252,10 +252,10 @@ fn filter_ls_long(stdout: &str) -> String {
         }
         count += 1;
         // Parse size from first whitespace-delimited field.
-        if let Some(size_str) = trimmed.split_whitespace().next() {
-            if let Ok(size) = size_str.parse::<u64>() {
-                total_bytes += size;
-            }
+        if let Some(size_str) = trimmed.split_whitespace().next()
+            && let Ok(size) = size_str.parse::<u64>()
+        {
+            total_bytes += size;
         }
         if entries.len() < MAX_ITEMS {
             entries.push(compact_ls_long_line(trimmed));
