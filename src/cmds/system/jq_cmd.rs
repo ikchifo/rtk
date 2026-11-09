@@ -1,4 +1,5 @@
 use crate::cmds::system::json_cmd;
+use crate::core::shell::{display_args, with_args};
 use crate::core::stream::exec_capture;
 use crate::core::tracking;
 use crate::core::utils::resolved_command;
@@ -11,9 +12,12 @@ const JSON_COMPRESS_DEPTH: usize = 4;
 
 pub fn run(args: &[String], verbose: u8) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
+    let args_display = display_args(args);
+    let original_cmd = with_args("jq", &args_display);
+    let rtk_cmd = with_args("rtk jq", &args_display);
 
     if verbose > 0 {
-        eprintln!("jq: {}", args.join(" "));
+        eprintln!("jq: {}", args_display);
     }
 
     let mut cmd = resolved_command("jq");
@@ -26,12 +30,7 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
         // Error output from jq is already compact; show as-is.
         let filtered = result.stderr.clone();
         print!("{}", filtered);
-        timer.track(
-            &format!("jq {}", args.join(" ")),
-            "rtk jq",
-            &raw_output,
-            &filtered,
-        );
+        timer.track(&original_cmd, &rtk_cmd, &raw_output, &filtered);
         return Ok(result.exit_code);
     }
 
@@ -39,12 +38,7 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
     let filtered = compress_output(stdout);
 
     print!("{}", filtered);
-    timer.track(
-        &format!("jq {}", args.join(" ")),
-        "rtk jq",
-        &raw_output,
-        &filtered,
-    );
+    timer.track(&original_cmd, &rtk_cmd, &raw_output, &filtered);
 
     Ok(0)
 }

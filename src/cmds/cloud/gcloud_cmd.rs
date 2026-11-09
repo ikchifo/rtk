@@ -5,6 +5,7 @@
 //! JSON fallback for unrecognized subcommands.
 
 use crate::cmds::system::json_cmd;
+use crate::core::shell::{display_args, with_args};
 use crate::core::stream::exec_capture;
 use crate::core::tee::force_tee_hint;
 use crate::core::tracking;
@@ -138,7 +139,7 @@ fn run_gcloud_filtered(
     verbose: u8,
     filter_fn: fn(&str) -> Option<FilterResult>,
 ) -> Result<i32> {
-    let cmd_label = format!("gcloud {}", sub_args.join(" "));
+    let cmd_label = with_args("gcloud", &display_args(sub_args));
     let rtk_label = format!("rtk {}", cmd_label);
     let slug = cmd_label.replace(' ', "_");
     let timer = tracking::TimedExecution::start();
@@ -196,7 +197,7 @@ fn run_gcloud_filtered(
 
 /// Pass-through: run gcloud, strip noise from stderr, print stdout as-is.
 fn run_passthrough(args: &[String], verbose: u8) -> Result<i32> {
-    let cmd_label = format!("gcloud {}", args.join(" "));
+    let cmd_label = with_args("gcloud", &display_args(args));
     let timer = tracking::TimedExecution::start();
 
     let mut cmd = resolved_command("gcloud");
@@ -228,7 +229,7 @@ fn run_passthrough(args: &[String], verbose: u8) -> Result<i32> {
 
 /// Generic: try JSON compression, fall back to line truncation.
 fn run_generic(args: &[String], verbose: u8) -> Result<i32> {
-    let cmd_label = format!("gcloud {}", args.join(" "));
+    let cmd_label = with_args("gcloud", &display_args(args));
     let rtk_label = format!("rtk {}", cmd_label);
     let timer = tracking::TimedExecution::start();
 
@@ -270,7 +271,7 @@ fn run_generic(args: &[String], verbose: u8) -> Result<i32> {
 // ---------------------------------------------------------------------------
 
 fn run_builds_log(args: &[String], verbose: u8) -> Result<i32> {
-    let cmd_label = format!("gcloud builds log {}", args.join(" "));
+    let cmd_label = with_args("gcloud builds log", &display_args(args));
     let rtk_label = format!("rtk {}", cmd_label);
     let timer = tracking::TimedExecution::start();
 

@@ -1,3 +1,4 @@
+use crate::core::shell::{display_args, with_args};
 use crate::core::stream::exec_capture;
 use crate::core::tracking;
 use crate::core::utils::{human_bytes, join_with_overflow, resolved_command};
@@ -29,7 +30,7 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
 
 fn run_ls(args: &[String], verbose: u8) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
-    let raw_cmd = format!("gsutil ls {}", args.join(" "));
+    let raw_cmd = with_args("gsutil ls", &display_args(args));
 
     if verbose > 0 {
         eprintln!("gsutil ls {}", args.join(" "));
@@ -62,7 +63,7 @@ fn run_ls(args: &[String], verbose: u8) -> Result<i32> {
 
 fn run_transfer(subcmd: &str, args: &[String], verbose: u8) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
-    let raw_cmd = format!("gsutil {} {}", subcmd, args.join(" "));
+    let raw_cmd = with_args(&format!("gsutil {subcmd}"), &display_args(args));
 
     if verbose > 0 {
         eprintln!("gsutil {} {}", subcmd, args.join(" "));
@@ -99,7 +100,7 @@ fn run_transfer(subcmd: &str, args: &[String], verbose: u8) -> Result<i32> {
 
 fn run_cat(args: &[String], verbose: u8) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
-    let raw_cmd = format!("gsutil cat {}", args.join(" "));
+    let raw_cmd = with_args("gsutil cat", &display_args(args));
 
     if verbose > 0 {
         eprintln!("gsutil cat {}", args.join(" "));
@@ -126,7 +127,7 @@ fn run_cat(args: &[String], verbose: u8) -> Result<i32> {
 
 fn run_stat(args: &[String], verbose: u8) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
-    let raw_cmd = format!("gsutil stat {}", args.join(" "));
+    let raw_cmd = with_args("gsutil stat", &display_args(args));
 
     if verbose > 0 {
         eprintln!("gsutil stat {}", args.join(" "));
@@ -153,7 +154,7 @@ fn run_stat(args: &[String], verbose: u8) -> Result<i32> {
 
 fn run_du(args: &[String], verbose: u8) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
-    let raw_cmd = format!("gsutil du {}", args.join(" "));
+    let raw_cmd = with_args("gsutil du", &display_args(args));
 
     if verbose > 0 {
         eprintln!("gsutil du {}", args.join(" "));
@@ -180,7 +181,7 @@ fn run_du(args: &[String], verbose: u8) -> Result<i32> {
 
 fn run_fallback(args: &[String], verbose: u8) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
-    let raw_cmd = format!("gsutil {}", args.join(" "));
+    let raw_cmd = with_args("gsutil", &display_args(args));
 
     if verbose > 0 {
         eprintln!("gsutil {}", args.join(" "));

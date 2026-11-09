@@ -1,6 +1,7 @@
 //! Filters `uv` package manager output to strip resolution/download noise.
 
 use crate::core::runner;
+use crate::core::shell::{display_args, with_args};
 use crate::core::stream::{self, FilterMode, StdinMode, exec_capture};
 use crate::core::tracking;
 use crate::core::truncate::{CAP_INVENTORY, CAP_WARNINGS};
@@ -51,24 +52,30 @@ const PIP_LIST_MAX: usize = 30;
 
 pub fn run(args: &[String], verbose: u8) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
+    let args_display = display_args(args);
 
     let subcommand = args.first().map(|s| s.as_str()).unwrap_or("");
     let sub_args = if args.is_empty() { &[] } else { &args[1..] };
 
-    let (raw_output, filtered, exit_code) = match subcommand {
-        "run" => run_uv_run(sub_args, verbose)?,
-        "sync" => run_uv_sync(sub_args, verbose)?,
-        "lock" => run_uv_lock(sub_args, verbose)?,
-        "add" | "remove" => run_uv_add_remove(subcommand, sub_args, verbose)?,
-        "tree" => run_uv_tree(sub_args, verbose)?,
-        "init" | "venv" => run_passthrough(args, verbose)?,
-        "pip" => run_uv_pip(sub_args, verbose)?,
-        _ => run_generic(args, verbose)?,
+    // A usage request belongs to uv itself, so hand it over unfiltered.
+    let (raw_output, filtered, exit_code) = if runner::requests_help_args("uv", args) {
+        run_passthrough(args, verbose)?
+    } else {
+        match subcommand {
+            "run" => run_uv_run(sub_args, verbose)?,
+            "sync" => run_uv_sync(sub_args, verbose)?,
+            "lock" => run_uv_lock(sub_args, verbose)?,
+            "add" | "remove" => run_uv_add_remove(subcommand, sub_args, verbose)?,
+            "tree" => run_uv_tree(sub_args, verbose)?,
+            "init" | "venv" => run_passthrough(args, verbose)?,
+            "pip" => run_uv_pip(sub_args, verbose)?,
+            _ => run_generic(args, verbose)?,
+        }
     };
 
     timer.track(
-        &format!("uv {}", args.join(" ")),
-        &format!("rtk uv {}", args.join(" ")),
+        &with_args("uv", &args_display),
+        &with_args("rtk uv", &args_display),
         &raw_output,
         &filtered,
     );
